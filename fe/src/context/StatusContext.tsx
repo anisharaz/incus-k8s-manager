@@ -10,7 +10,7 @@ export function StatusProvider({ children }: { children: ReactNode }) {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch("http://localhost:8000/api/v1/status");
+      const response = await fetch("/api/v1/status");
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);

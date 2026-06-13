@@ -1,57 +1,30 @@
-import { Button } from "./components/ui/button";
+import { Navigate, Route, Routes } from "react-router";
 import { Header } from "./components/Header";
-import { useStatus } from "./context";
+import { SidebarProvider } from "./components/ui/sidebar";
+import { AppSidebar } from "./components/Sidebar";
+import { Clusters } from "./pages/Clusters";
+import { ClusterDetail } from "./pages/ClusterDetail";
+import { Settings } from "./pages/Settings";
 
-function Home() {
-  const { status, loading, error, refetch } = useStatus();
-
+function App() {
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Header />
-      <main className="container mx-auto px-4 py-8">
-        <div className="mb-8">
-          <h2 className="text-2xl font-bold mb-4">Status Dashboard</h2>
-
-          <div className="bg-white rounded-lg shadow p-6 mb-4">
-            <div className="flex justify-between items-center">
-              <div>
-                <h3 className="text-lg font-semibold mb-2">Incus Service</h3>
-                {loading ? (
-                  <p className="text-gray-500">Loading...</p>
-                ) : error ? (
-                  <p className="text-red-500">Error: {error}</p>
-                ) : (
-                  <div>
-                    <p className="text-gray-700">
-                      Status:{" "}
-                      <span
-                        className={`font-bold ${
-                          status?.incus === "running"
-                            ? "text-green-600"
-                            : status?.incus === "stopped"
-                              ? "text-yellow-600"
-                              : "text-red-600"
-                        }`}
-                      >
-                        {status?.incus}
-                      </span>
-                    </p>
-                  </div>
-                )}
-              </div>
-              <Button onClick={refetch} disabled={loading}>
-                {loading ? "Refreshing..." : "Refresh"}
-              </Button>
-            </div>
-          </div>
+    <SidebarProvider>
+      <div className="flex w-full min-h-screen">
+        <AppSidebar />
+        <div className="flex-1 flex flex-col">
+          <Header />
+          <main className="flex-1 container mx-auto px-4 py-8">
+            <Routes>
+              <Route path="/" element={<Navigate to="/clusters" replace />} />
+              <Route path="/clusters" element={<Clusters />} />
+              <Route path="/clusters/:clusterId" element={<ClusterDetail />} />
+              <Route path="/settings" element={<Settings />} />
+            </Routes>
+          </main>
         </div>
-
-        <div className="mb-8">
-          <Button>Click me</Button>
-        </div>
-      </main>
-    </div>
+      </div>
+    </SidebarProvider>
   );
 }
 
-export default Home;
+export default App;

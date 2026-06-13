@@ -2,12 +2,17 @@ package routes
 
 import (
 	"github.com/anisharaz/incus-k8s-manager/be/internal/handlers"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/gofiber/fiber/v3"
+	"gorm.io/gorm"
 )
 
 // SetupRoutes initializes all application routes
-func SetupRoutes(app *fiber.App) {
+func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB) {
+	taskHandlers := handlers.NewTaskHandlers(jobManager)
+	clusterHandlers := handlers.NewClusterHandlers(db, jobManager)
+
 	// Apply global middleware
 	app.Use(middleware.LoggerMiddleware())
 	app.Use(middleware.CORSMiddleware())
@@ -20,6 +25,14 @@ func SetupRoutes(app *fiber.App) {
 
 	// Status routes
 	v1.Get("/status", handlers.StatusHandler)
+	v1.Get("/jobs", taskHandlers.ListJobs)
+	v1.Get("/jobs/:id", taskHandlers.GetJob)
+	v1.Post("/jobs/demo", taskHandlers.CreateDemoJob)
+
+	// Cluster routes
+	v1.Post("/clusters", clusterHandlers.CreateCluster)
+	v1.Get("/clusters", clusterHandlers.ListClusters)
+	v1.Get("/clusters/:id", clusterHandlers.GetCluster)
 
 	// Root API endpoint
 	v1.Get("/", func(c fiber.Ctx) error {
