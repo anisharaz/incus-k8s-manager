@@ -3,22 +3,26 @@ package main
 import (
 	"log"
 
+	"github.com/anisharaz/incus-k8s-manager/be/internal/config"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/routes"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/cors"
 )
 
 func main() {
-	app := fiber.New()
+	// Load configuration
+	cfg := config.NewConfig()
 
-	v1 := app.Group("/api")
-	v1.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"http://localhost:5173", "http://localhost:8000"},
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept"},
-	}))
-
-	v1.Get("/", func(c fiber.Ctx) error {
-		return c.SendString("Hello, me")
+	// Create Fiber app
+	app := fiber.New(fiber.Config{
+		AppName: "Incus K8s Manager API",
 	})
 
-	log.Fatal(app.Listen(":8000"))
+	// Setup all routes
+	routes.SetupRoutes(app)
+
+	// Start server
+	log.Printf("Starting server on :%s\n", cfg.Port)
+	if err := app.Listen(":" + cfg.Port); err != nil {
+		log.Fatalf("Failed to start server: %v\n", err)
+	}
 }
