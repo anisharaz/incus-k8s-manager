@@ -55,8 +55,9 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 	}
 
 	// Check if cluster with this name already exists
-	var existingCluster models.Cluster
-	if err := h.db.Where("name = ?", req.Name).First(&existingCluster).Error; err == nil {
+	var count int64
+	h.db.Model(&models.Cluster{}).Where("name = ?", req.Name).Count(&count)
+	if count > 0 {
 		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
 			Error:   "cluster already exists",
 			Message: "a cluster with this name already exists",
