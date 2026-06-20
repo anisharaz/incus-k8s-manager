@@ -69,7 +69,6 @@ log() {
 wait_for_vm() {
     log "Waiting for VM to start"
     
-    ```
     while true; do
         status=$(incus list "$VM_NAME" --format csv -c s 2>/dev/null || true)
         
@@ -79,20 +78,22 @@ wait_for_vm() {
         
         sleep 2
     done
-    
     echo "VM is running"
-    ```
     
 }
-
 wait_for_cloud_init() {
     log "Waiting for cloud-init"
     
-    ```
-    incus exec "$VM_NAME" -- cloud-init status --wait
-    
-    echo "Cloud-init completed"
-    ```
+    # Loop until the VM agent is available and cloud-init reports finished
+    while true; do
+        # Try to query cloud-init status; ignore errors if the agent is not ready
+        if incus exec "$VM_NAME" -- cloud-init status --wait 2>/dev/null; then
+            echo "Cloud-init completed"
+            break
+        fi
+        echo "VM agent not ready yet – retrying in 5s"
+        sleep 5
+    done
     
 }
 
@@ -113,10 +114,7 @@ if incus info "$VM_NAME" >/dev/null 2>&1; then
     exit 1
 fi
 
-incus launch "$IMAGE" "$VM_NAME"
---vm
--c limits.cpu="$CPU"
--c limits.memory="$MEMORY"
+incus launch "$IMAGE" "$VM_NAME" --vm -c limits.cpu="$CPU" -c limits.memory="$MEMORY"
 
 wait_for_vm
 wait_for_cloud_init
@@ -136,14 +134,7 @@ apt-get update
 log "Installing prerequisites"
 
 exec_vm "
-DEBIAN_FRONTEND=noninteractive apt-get install -y
-curl
-wget
-gpg
-ca-certificates
-apt-transport-https
-software-properties-common
-containerd
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget gpg ca-certificates apt-transport-https software-properties-common containerd
 "
 
 ###############################################################################
@@ -155,14 +146,6 @@ containerd
 log "Configuring containerd"
 
 exec_vm "
-mkdir -p /etc/containerd
-
-containerd config default > /etc/containerd/config.toml
-
-sed -i
-'s/SystemdCgroup = false/SystemdCgroup = true/'
-/etc/containerd/config.toml
-
 systemctl enable containerd
 systemctl restart containerd
 "
@@ -188,19 +171,11 @@ modprobe br_netfilter
 log "Configuring sysctl"
 
 exec_vm "
-touch /etc/sysctl.conf
-
-grep -q '^net.ipv4.ip_forward=' /etc/sysctl.conf
-&& sed -i 's/^net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
-|| echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-
-grep -q '^net.bridge.bridge-nf-call-iptables=' /etc/sysctl.conf
-|| echo 'net.bridge.bridge-nf-call-iptables=1' >> /etc/sysctl.conf
-
-grep -q '^net.bridge.bridge-nf-call-ip6tables=' /etc/sysctl.conf
-|| echo 'net.bridge.bridge-nf-call-ip6tables=1' >> /etc/sysctl.conf
-
-sysctl -p
+    touch /etc/sysctl.conf &&
+    (grep -q '^net.ipv4.ip_forward=' /etc/sysctl.conf && sed -i 's/^net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf) || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf &&
+    grep -q '^net.bridge.bridge-nf-call-iptables=' /etc/sysctl.conf || echo 'net.bridge.bridge-nf-call-iptables=1' >> /etc/sysctl.conf &&
+    grep -q '^net.bridge.bridge-nf-call-ip6tables=' /etc/sysctl.conf || echo 'net.bridge.bridge-nf-call-ip6tables=1' >> /etc/sysctl.conf &&
+    sysctl -p
 "
 
 ###############################################################################
@@ -212,20 +187,11 @@ sysctl -p
 log "Installing Kubernetes repository"
 
 exec_vm "
-mkdir -p /etc/apt/keyrings
-
-curl -fsSL
-https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key
-| gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-
-chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-
-echo
-'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /' \
-
-> /etc/apt/sources.list.d/kubernetes.list
-
-apt-get update
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg && \
+    chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg && \
+    echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /' > /etc/apt/sources.list.d/kubernetes.list && \
+    apt-get update
 "
 
 ###############################################################################
@@ -237,14 +203,9 @@ apt-get update
 log "Installing kubeadm components"
 
 exec_vm "
-DEBIAN_FRONTEND=noninteractive apt-get install -y
-kubelet
-kubeadm
-kubectl
-
-apt-mark hold kubelet kubeadm kubectl
-
-systemctl enable kubelet
+    DEBIAN_FRONTEND=noninteractive apt-get install -y kubelet kubeadm kubectl && \
+    apt-mark hold kubelet kubeadm kubectl && \
+    systemctl enable kubelet
 "
 
 ###############################################################################
@@ -282,8 +243,8 @@ echo "Master IP: $MASTER_IP"
 log "Initializing Kubernetes cluster"
 
 exec_vm "
-kubeadm init
---apiserver-advertise-address=${MASTER_IP}
+kubeadm init \
+--apiserver-advertise-address=${MASTER_IP} \
 --pod-network-cidr=10.244.0.0/16
 "
 
@@ -311,8 +272,7 @@ chown root:root /root/.kube/config
 
 log "Waiting for API server"
 
-until incus exec "$VM_NAME" -- bash -c
-"export KUBECONFIG=/etc/kubernetes/admin.conf && kubectl get nodes >/dev/null 2>&1"
+until incus exec "$VM_NAME" -- bash -c "export KUBECONFIG=/etc/kubernetes/admin.conf && kubectl get nodes >/dev/null 2>&1"
 do
     sleep 5
 done
@@ -343,8 +303,9 @@ export KUBECONFIG=/etc/kubernetes/admin.conf
 helm repo add cilium https://helm.cilium.io
 helm repo update
 
-helm upgrade --install cilium cilium/cilium
---namespace kube-system
+helm upgrade --install cilium cilium/cilium \
+  --namespace kube-system \
+  --set operator.replicas=1
 "
 
 ###############################################################################
@@ -357,11 +318,7 @@ log "Waiting for node readiness"
 
 exec_vm "
 export KUBECONFIG=/etc/kubernetes/admin.conf
-
-kubectl wait
---for=condition=Ready
-node/$(hostname)
---timeout=15m
+kubectl wait --for=condition=Ready node/\$(hostname) --timeout=15m
 "
 
 ###############################################################################
@@ -375,9 +332,9 @@ log "Waiting for Cilium"
 exec_vm "
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
-kubectl rollout status
-daemonset/cilium
--n kube-system
+kubectl rollout status \
+daemonset/cilium \
+-n kube-system \
 --timeout=15m
 "
 
@@ -405,8 +362,7 @@ kubectl get pods -A
 
 log "Worker join command"
 
-JOIN_COMMAND=$(incus exec "$VM_NAME" -- bash -c
-"export KUBECONFIG=/etc/kubernetes/admin.conf && kubeadm token create --print-join-command")
+JOIN_COMMAND=$(incus exec "$VM_NAME" -- bash -c "export KUBECONFIG=/etc/kubernetes/admin.conf && kubeadm token create --print-join-command")
 
 echo
 echo "$JOIN_COMMAND"

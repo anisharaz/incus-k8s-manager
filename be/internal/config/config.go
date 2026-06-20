@@ -26,7 +26,7 @@ func NewConfig() *Config {
 		DBPass: getEnv("DB_PASSWORD", "postgres"),
 		DBHost: getEnv("DB_HOST", "localhost"),
 		DBPort: getEnv("DB_PORT", "5432"),
-		DBName: getEnv("DB_NAME", "incus_k8s"),
+		DBName: getEnv("DB_NAME", "incus_k8s_manager"),
 	}
 }
 
