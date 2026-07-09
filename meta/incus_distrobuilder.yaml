@@ -1,6 +1,6 @@
 image:
   distribution: "ubuntu"
-  release: "noble"
+  release: "questing"
 
 source:
   downloader: debootstrap
@@ -329,21 +329,6 @@ files:
 
   - path: /var/lib/dbus/machine-id
     generator: remove
-
-  - path: /etc/netplan/10-lxc.yaml
-    generator: dump
-    mode: 0600
-    content: |-
-      network:
-        version: 2
-        ethernets:
-          eth0:
-            dhcp4: true
-            dhcp-identifier: mac
-    types:
-      - container
-    variants:
-      - default
 
   - path: /etc/netplan/10-lxc.yaml
     generator: dump
