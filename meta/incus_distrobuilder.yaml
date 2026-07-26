@@ -1,7 +1,7 @@
 image:
   distribution: ubuntu
   release: resolute
-  description: Ubuntu 26.04 LTS (Resolute Raccoon) with Kubernetes v1.33
+  description: Ubuntu 26.04 LTS with Kubernetes v1.33
   architecture: x86_64
   expiry: 30d
 
@@ -14,29 +14,14 @@ source:
     - 0x790BC7277767219C42C86F933B4FE6ACC0B21F32
     - 0xf6ecb3762474eda9d21b7022871920d1991bc93c
 
-targets:
-  lxc:
-    create_message: |-
-      You just created an Ubuntu 26.04 K8s VM.
-    config: []
-
 files:
   - path: /etc/hostname
     generator: hostname
-
   - path: /etc/hosts
     generator: hosts
-
-  - path: /etc/resolvconf/resolv.conf.d/original
-    generator: remove
-
-  - path: /etc/resolvconf/resolv.conf.d/tail
-    generator: remove
-
   - path: /etc/machine-id
     generator: dump
     content: uninitialized
-
   - path: /var/lib/dbus/machine-id
     generator: remove
 
@@ -50,8 +35,7 @@ files:
           enp5s0:
             dhcp4: true
             dhcp-identifier: mac
-    types:
-      - vm
+    types: [vm]
 
   - path: /etc/sysctl.d/99-kubernetes.conf
     generator: dump
@@ -60,30 +44,24 @@ files:
       net.bridge.bridge-nf-call-iptables = 1
       net.bridge.bridge-nf-call-ip6tables = 1
       net.ipv4.ip_forward = 1
-    types:
-      - vm
+    types: [vm]
 
   - name: meta-data
     generator: cloud-init
-
   - name: network-config
     generator: cloud-init
-
   - name: user-data
     generator: cloud-init
-
   - name: vendor-data
     generator: cloud-init
 
   - name: ext4
     generator: fstab
-    types:
-      - vm
+    types: [vm]
 
   - name: incus-agent
     generator: incus-agent
-    types:
-      - vm
+    types: [vm]
 
   - path: /etc/default/grub.d/50-incus.cfg
     generator: dump
@@ -92,8 +70,7 @@ files:
       GRUB_TIMEOUT=0
       GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} console=tty1 console=ttyS0"
       GRUB_TERMINAL=console
-    types:
-      - vm
+    types: [vm]
 
   - path: /etc/sudoers.d/90-incus
     generator: dump
@@ -111,26 +88,14 @@ packages:
         - openssh-client
         - sudo
         - vim
-        - apt-transport-https
         - ca-certificates
         - gpg
-      action: install
-
-    - packages:
         - language-pack-en
-      action: install
-
-    - packages:
         - containerd
-      action: install
-
-    - packages:
         - systemd-resolved
         - systemd-timesyncd
-      action: install
-
-    - packages:
         - cloud-init
+        - fuse3
       action: install
 
     - packages:
@@ -142,33 +107,16 @@ packages:
     - packages:
         - grub-efi-amd64-signed
         - shim-signed
-      action: install
-      architectures:
-        - amd64
-      types:
-        - vm
-
-    - packages:
         - linux-image-virtual
-      action: install
-      types:
-        - vm
-
-    - packages:
         - cloud-guest-utils
       action: install
-      types:
-        - vm
+      architectures: [amd64]
+      types: [vm]
 
     - packages:
         - os-prober
       action: remove
-      types:
-        - vm
-
-    - packages:
-        - fuse3
-      action: install
+      types: [vm]
 
   repositories:
     - name: sources.list
@@ -176,8 +124,6 @@ packages:
         deb http://archive.ubuntu.com/ubuntu {{ image.release }} main restricted universe multiverse
         deb http://archive.ubuntu.com/ubuntu {{ image.release }}-updates main restricted universe multiverse
         deb http://security.ubuntu.com/ubuntu {{ image.release }}-security main restricted universe multiverse
-      architectures:
-        - amd64
 
 actions:
   - trigger: post-unpack
@@ -196,7 +142,6 @@ actions:
 
       apt-get update
       apt-get install -y --no-install-recommends curl ca-certificates gnupg
-
       mkdir -p /etc/apt/keyrings
       curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key \
         | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
@@ -213,38 +158,31 @@ actions:
       [ ! -d /run/systemd ] && exit 0
       chattr -i /run/systemd
 
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
-
       mkdir -p /etc/containerd
       containerd config default > /etc/containerd/config.toml
       sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
 
       cat > /etc/modules-load.d/k8s.conf <<'EOF'
       overlay
       br_netfilter
       EOF
 
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
-
       systemctl mask swap.target
-
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
-
       apt-mark hold kubelet kubeadm kubectl
+      systemctl enable kubelet systemd-networkd
+      systemctl mask ua-auto-attach
+
+      umount -l /etc/resolv.conf || true
+      rm -f /etc/resolv.conf
+      ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+      locale-gen en_US.UTF-8
+      update-locale LANG=en_US.UTF-8
+
+      mount -o bind / /mnt
+      rm -rf /mnt/run/*
+      umount /mnt
+      rm -f /etc/*-
 
   - trigger: post-packages
     action: |-
@@ -253,38 +191,6 @@ actions:
 
       getent group sudo >/dev/null 2>&1 || groupadd --system sudo
       useradd --create-home -s /bin/bash -G sudo -U ubuntu
-
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
-
-      systemctl enable kubelet
-      systemctl enable systemd-networkd
-      systemctl mask ua-auto-attach
-
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
-
-      umount -l /etc/resolv.conf || true
-      rm -f /etc/resolv.conf
-      ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-
-  - trigger: post-packages
-    action: |-
-      #!/bin/sh
-      set -eux
-
-      locale-gen en_US.UTF-8
-      update-locale LANG=en_US.UTF-8
-
-      mount -o bind / /mnt
-      rm -rf /mnt/run/*
-      umount /mnt
-
-      rm -f /etc/*-
 
   - trigger: post-files
     action: |-
@@ -299,19 +205,10 @@ actions:
       update-initramfs -u -k all
 
       update-grub
-
       grub-install --uefi-secure-boot --target="${TARGET}-efi" --no-nvram --removable
       grub-install --uefi-secure-boot --target="${TARGET}-efi" --no-nvram
-
       update-grub
       sed -i "s#root=[^ ]*#root=${DISTROBUILDER_ROOT_UUID}#g" /boot/grub/grub.cfg
-    types:
-      - vm
-
-  - trigger: post-files
-    action: |-
-      #!/bin/sh
-      set -eux
 
       cat > /etc/systemd/system/incus-growpart.service <<'EOF'
       [Unit]
@@ -329,8 +226,7 @@ actions:
       EOF
 
       systemctl enable incus-growpart
-    types:
-      - vm
+    types: [vm]
 
 mappings:
   architecture_map: debian
