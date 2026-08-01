@@ -97,6 +97,11 @@ be/
 
 ## API Endpoints
 
+> **See [`../API.md`](../API.md) for the full API reference** (request/response
+> shapes, error format, the async job-polling pattern, validation rules,
+> and a worked example flow) — written for frontend consumption. The
+> summary below is just a quick index.
+
 ### Health Check
 
 - **GET** `/health` - Server health status
@@ -145,20 +150,22 @@ network) as a background job — see Jobs above to poll progress. For the
 master, the job also runs `kubeadm init`, copies `/etc/kubernetes/admin.conf`
 to `/root/.kube/config`, and polls the API server's `/healthz` until it's
 ready before marking the job complete. No CNI plugin is installed, so
-`kubectl get nodes` shows the master as `NotReady` — pod networking is a
-later step, as is `kubeadm join` for workers.
+`kubectl get nodes` shows every node as `NotReady` — pod networking is a
+later step.
 
 `cpu` (int), `memory`, and `disk` (Incus size format, e.g. `"4GiB"`) size the
-master's VM; each is optional and falls back to a default if omitted. All
+node's VM; each is optional and falls back to a default if omitted. All
 three are validated against a minimum — `cpu`/`memory` match kubeadm's own
-hard preflight requirements (2 CPUs, 1700MB), `disk` is this app's own floor
-(20GiB, not kubeadm-enforced) — a value below the minimum is rejected with a
-400, not silently clamped.
+hard preflight requirements (2 CPUs, 1700MB; enforced for `kubeadm join` too,
+not just `init`), `disk` is this app's own floor (20GiB, not
+kubeadm-enforced) — a value below the minimum is rejected with a 400, not
+silently clamped.
 
 - **POST** `/api/v1/clusters` - Create a cluster + master node (`{"ownerId": "...", "networkId": "...", "name": "...", "cpu": 2, "memory": "2GiB", "disk": "20GiB"}`)
 - **GET** `/api/v1/clusters` - List all clusters
 - **GET** `/api/v1/clusters/:id` - Get a single cluster
 - **GET** `/api/v1/clusters/:id/nodes` - List a cluster's nodes (master first), each with its `jobId`, `status`, and `ip`
+- **POST** `/api/v1/clusters/:id/nodes` - Add a worker node (body optional — same `cpu`/`memory`/`disk` fields as above, all defaulted if omitted: `{}` works). Requires the cluster to be `ready` and its master `running` (`409` otherwise). Fetches a *fresh* join token from the master (`kubeadm token create --print-join-command` — not the one kubeadm init printed, which may be long expired) and runs `kubeadm join` on the new VM. Display name auto-increments per cluster (`worker-1`, `worker-2`, ...).
 
 Like cluster networks, a node's `name` (e.g. `master`) is a display name
 unique within its cluster; `incusName` is the system-generated, globally
@@ -252,8 +259,8 @@ Environment variables can be set via `.env` file or system environment:
 
 - [ ] Recovery of interrupted jobs on server restart (currently marked by absence; orphaned `running` jobs are not re-run)
 - [ ] CNI installation (nodes stay `NotReady` in `kubectl get nodes` without one)
-- [ ] Add-worker-node endpoint + `kubeadm join` (schema already supports it; `CreateNodeJob` is role-agnostic, just needs the join command/token plumbed through)
 - [ ] Deleting a cluster/node (stop + delete the Incus VM, not just the DB row)
+- [ ] Removing a worker cleanly (`kubectl drain` + `kubeadm reset` before deleting its VM, not just deleting the VM out from under the cluster)
 - [ ] Authentication and authorization
 - [ ] Ownership existence checks (an invalid `ownerId`/`networkId` currently surfaces as a raw FK-violation 500, not a clean 400/404)
 - [ ] Comprehensive error handling

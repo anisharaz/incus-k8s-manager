@@ -15,7 +15,7 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	networkHandlers := handlers.NewNetworkHandlers(db, incusClient)
 	userHandlers := handlers.NewUserHandlers(db)
 	clusterHandlers := handlers.NewClusterHandlers(db, jobManager)
-	nodeHandlers := handlers.NewNodeHandlers(db)
+	nodeHandlers := handlers.NewNodeHandlers(db, jobManager)
 
 	// Apply global middleware
 	app.Use(middleware.LoggerMiddleware())
@@ -48,6 +48,7 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Get("/clusters", clusterHandlers.ListClusters)
 	v1.Get("/clusters/:id", clusterHandlers.GetCluster)
 	v1.Get("/clusters/:id/nodes", nodeHandlers.ListNodesForCluster)
+	v1.Post("/clusters/:id/nodes", nodeHandlers.CreateNode)
 
 	// Root API endpoint
 	v1.Get("/", func(c fiber.Ctx) error {

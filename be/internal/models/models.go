@@ -161,9 +161,13 @@ type Node struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// CreateNodeRequest represents the request to add a worker node to a cluster.
+// CreateNodeRequest represents the request to add a worker node to a
+// cluster (the cluster is identified by the URL, not the body). The body
+// itself is optional — all fields default if omitted.
 type CreateNodeRequest struct {
-	ClusterID string `json:"clusterId"`
+	CPU    int    `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+	Disk   string `json:"disk,omitempty"`
 }
 
 // NodeResponse wraps a single node.

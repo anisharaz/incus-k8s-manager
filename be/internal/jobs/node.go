@@ -40,11 +40,12 @@ type NodeSize struct {
 // CreateNodeJob creates a node provisioning job and runs it in the
 // background: it launches the node's VM (sized per `size`) on the given
 // network, waits for it to get an IP and come up, and updates the node row
-// throughout. If the node is a master, it also runs `kubeadm init`, copies
-// the admin kubeconfig, and waits for the API server to report healthy
-// before the job is marked complete. It does NOT run `kubeadm join` for
-// workers yet.
-func (m *Manager) CreateNodeJob(nodeID, incusName, networkIncusName, role string, size NodeSize) (*models.Job, error) {
+// throughout. For a master, it also runs `kubeadm init`, copies the admin
+// kubeconfig, and waits for the API server to report healthy. For a worker,
+// masterIncusName identifies the cluster's master, from which a fresh join
+// command is fetched (`kubeadm token create --print-join-command`) and run
+// on the new node; masterIncusName is ignored for a master.
+func (m *Manager) CreateNodeJob(nodeID, incusName, networkIncusName, role, masterIncusName string, size NodeSize) (*models.Job, error) {
 	now := time.Now().UTC()
 	job := &models.Job{
 		ID:        uuid.NewString(),
@@ -63,17 +64,17 @@ func (m *Manager) CreateNodeJob(nodeID, incusName, networkIncusName, role string
 		return nil, err
 	}
 
-	go m.runNodeJob(job.ID, nodeID, incusName, networkIncusName, role, size)
+	go m.runNodeJob(job.ID, nodeID, incusName, networkIncusName, role, masterIncusName, size)
 
 	return job, nil
 }
 
-// runNodeJob launches the node's VM, waits for it to get an IPv4 address
-// and for the guest agent to come up, then (for a master) runs kubeadm init
-// and waits for the cluster to become healthy, before marking the node
-// running. If the node is a cluster's master, it also updates the
-// cluster's status.
-func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role string, size NodeSize) {
+// runNodeJob launches the node's VM, waits for it to get an IPv4 address,
+// for the guest agent to come up, and for containerd to be ready, then
+// bootstraps it per its role (kubeadm init for a master, fetch-join-and-run
+// for a worker) before marking the node running. If the node is a
+// cluster's master, it also updates the cluster's status.
+func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role, masterIncusName string, size NodeSize) {
 	ctx, cancel := context.WithTimeout(context.Background(), nodeProvisionTimeout)
 	defer cancel()
 
@@ -117,23 +118,24 @@ func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role st
 		return
 	}
 
-	finalMessage := "VM is running"
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Stage = "waiting-for-containerd"
+		job.Progress = 75
+		job.Message = "Waiting for container runtime..."
+	})
 
-	if role == string(models.NodeRoleMaster) {
-		m.updateJob(jobID, func(job *models.Job) {
-			job.Stage = "waiting-for-containerd"
-			job.Progress = 75
-			job.Message = "Waiting for container runtime..."
-		})
+	// The guest agent can respond before containerd has finished starting
+	// (both come up during boot), and kubeadm requires a working CRI
+	// socket for both init and join, so wait for it explicitly.
+	if err := m.waitForContainerd(ctx, incusName); err != nil {
+		m.failNodeJob(jobID, nodeID, err)
+		return
+	}
 
-		// The guest agent can respond before containerd has finished
-		// starting (both come up during boot), and kubeadm init requires
-		// a working CRI socket, so wait for it explicitly.
-		if err := m.waitForContainerd(ctx, incusName); err != nil {
-			m.failNodeJob(jobID, nodeID, err)
-			return
-		}
+	var finalMessage string
 
+	switch role {
+	case string(models.NodeRoleMaster):
 		m.updateJob(jobID, func(job *models.Job) {
 			job.Stage = "bootstrapping"
 			job.Progress = 80
@@ -173,6 +175,45 @@ func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role st
 		}
 
 		finalMessage = "Kubernetes control plane is ready"
+
+	case string(models.NodeRoleWorker):
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "joining"
+			job.Progress = 80
+			job.Message = "Fetching join command from master..."
+		})
+
+		// Always request a fresh token rather than reusing the one printed
+		// by kubeadm init: that one may be long expired (default TTL 24h)
+		// by the time a worker is added.
+		joinCmd, err := m.incus.Run(ctx, masterIncusName, []string{"kubeadm", "token", "create", "--print-join-command"})
+		if err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Message = "Running kubeadm join..."
+		})
+		m.updateNode(nodeID, map[string]any{"message": "Running kubeadm join"})
+
+		if _, err := m.incus.Run(ctx, incusName, []string{"bash", "-c", strings.TrimSpace(joinCmd.Stdout)}); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "verifying"
+			job.Progress = 95
+			job.Message = "Waiting for node to register with the cluster..."
+		})
+
+		if err := m.waitForNodeRegistered(ctx, masterIncusName, incusName); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		finalMessage = "Node joined the cluster"
 	}
 
 	completedAt := time.Now().UTC()
@@ -232,6 +273,30 @@ func (m *Manager) waitForClusterHealthy(ctx context.Context, incusName string) e
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("cluster API on instance %q did not become healthy: %w", incusName, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// waitForNodeRegistered polls the master (via its root kubeconfig) until
+// `kubectl get node <nodeIncusName>` succeeds, confirming the worker
+// actually registered with the API server after kubeadm join. It doesn't
+// wait for Ready: without a CNI installed, nodes never reach Ready.
+func (m *Manager) waitForNodeRegistered(ctx context.Context, masterIncusName, nodeIncusName string) error {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	checkCmd := []string{"kubectl", "--kubeconfig=" + rootKubeconfigPath, "get", "node", nodeIncusName}
+
+	for {
+		result, err := m.incus.Exec(ctx, masterIncusName, checkCmd, nil)
+		if err == nil && result.ExitCode == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("node %q did not register with the cluster: %w", nodeIncusName, ctx.Err())
 		case <-ticker.C:
 		}
 	}

@@ -151,7 +151,8 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 		})
 	}
 
-	job, err := h.manager.CreateNodeJob(node.ID, node.IncusName, network.IncusName, node.Role, size)
+	// masterIncusName is unused for the master's own provisioning job.
+	job, err := h.manager.CreateNodeJob(node.ID, node.IncusName, network.IncusName, node.Role, "", size)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "job creation error",
