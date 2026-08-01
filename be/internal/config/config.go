@@ -6,14 +6,15 @@ import (
 
 // Config holds the application configuration
 type Config struct {
-	Port   string
-	Env    string
-	DBUrl  string
-	DBUser string
-	DBPass string
-	DBHost string
-	DBPort string
-	DBName string
+	Port            string
+	Env             string
+	DBUrl           string
+	DBUser          string
+	DBPass          string
+	DBHost          string
+	DBPort          string
+	DBName          string
+	IncusSocketPath string
 }
 
 // NewConfig creates a new configuration instance
@@ -27,6 +28,9 @@ func NewConfig() *Config {
 		DBHost: getEnv("DB_HOST", "localhost"),
 		DBPort: getEnv("DB_PORT", "5432"),
 		DBName: getEnv("DB_NAME", "incus_k8s_manager"),
+		// Path to the Incus unix socket shared by the incus container (see
+		// meta/incusDocker/docker-compose.yml's incus-socket-share volume).
+		IncusSocketPath: getEnv("INCUS_SOCKET_PATH", "/shared-socket/incus.sock"),
 	}
 }
 

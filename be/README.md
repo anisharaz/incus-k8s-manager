@@ -15,11 +15,15 @@ be/
 │   ├── config/
 │   │   └── config.go        # Configuration management
 │   ├── handlers/
-│   │   ├── clusters.go      # Cluster HTTP handlers
+│   │   ├── networks.go      # Cluster network HTTP handlers
 │   │   ├── health.go        # Health/status handlers
 │   │   └── jobs.go          # Job HTTP handlers (list/get)
+│   ├── incus/
+│   │   ├── client.go        # Incus SDK connection + instance lifecycle
+│   │   ├── exec.go          # In-VM command execution
+│   │   └── network.go       # Incus network management
 │   ├── jobs/
-│   │   └── manager.go       # DB-backed background job manager
+│   │   └── manager.go       # DB-backed background job manager (scaffold, no job types yet)
 │   ├── middleware/
 │   │   ├── cors.go          # CORS middleware
 │   │   └── logger.go        # Request logging middleware
@@ -37,7 +41,8 @@ be/
 ## Features
 
 - **Fiber Framework**: Fast and lightweight web framework
-- **DB-Backed Job Manager**: Long-running tasks (e.g. cluster creation) run in background goroutines and persist their status/progress to Postgres continuously, so they survive restarts and can be polled via the API.
+- **DB-Backed Job Manager**: Long-running tasks (e.g. VM provisioning) run in background goroutines and persist their status/progress to Postgres continuously, so they survive restarts and can be polled via the API.
+- **Incus Integration**: Cluster networks and (soon) VM lifecycle are managed via the Incus Go SDK over a shared unix socket.
 - **Schema Migrations**: Database schema managed with the `golang-migrate` CLI.
 - **CORS Support**: Configured for frontend development
 - **Middleware**: Request logging and error handling
@@ -49,6 +54,7 @@ be/
 - PostgreSQL
 - `migrate` CLI (golang-migrate) for database migrations
 - Incus CLI installed (for status checks)
+- Access to an Incus daemon's unix socket (`INCUS_SOCKET_PATH`, see `meta/incusDocker/`)
 
 ## Setup
 
@@ -105,11 +111,20 @@ be/
 - **GET** `/api/v1/jobs` - List all background jobs
 - **GET** `/api/v1/jobs/:id` - Get a single job (status, progress, result)
 
-### Clusters
+### Cluster Networks
 
-- **POST** `/api/v1/clusters` - Create a cluster (starts a background job)
-- **GET** `/api/v1/clusters` - List all clusters
-- **GET** `/api/v1/clusters/:id` - Get a single cluster
+An Incus bridge network that cluster VMs are later launched onto. Creation
+validates the CIDR against every network Incus currently knows about
+(managed or not) to avoid overlaps, then creates the Incus bridge network
+synchronously (no background job needed).
+
+- **POST** `/api/v1/networks` - Create a cluster network (`{"name": "...", "cidr": "10.10.0.0/24"}`)
+- **GET** `/api/v1/networks` - List all cluster networks
+- **GET** `/api/v1/networks/:id` - Get a single cluster network
+- **DELETE** `/api/v1/networks/:id` - Delete a cluster network (fails if still in use by an instance)
+
+`name` doubles as the underlying Linux bridge interface name, so it must
+satisfy Incus's interface naming rules (2-15 characters, `[-_a-zA-Z0-9.]`).
 
 ## Available Commands
 
@@ -130,22 +145,26 @@ make help        # Show this help message
 
 ## Adding a New Job Type
 
-The job manager is intentionally simple. Each job is a pair of methods on
-`internal/jobs/manager.go`:
+The job manager (`internal/jobs/manager.go`) is intentionally a bare
+scaffold: `Manager` plus `List`/`Get`/`updateJob`. It has no job types yet
+(cluster network creation is synchronous and doesn't need one). To add one
+for a long-running task (e.g. VM provisioning):
 
-1. A `Create<Job>Job(...)` method that builds a `models.Job`, persists it as
-   `queued`, and starts a goroutine.
-2. A `run<Job>Job(...)` method that performs the work and calls `updateJob`
-   at each stage to persist `status`/`progress`/`stage`/`message`, updating
-   related records (e.g. the cluster row) as needed.
+1. Add a `Create<Job>Job(...)` method that builds a `models.Job`, persists it
+   as `queued`, and starts a goroutine.
+2. Add a `run<Job>Job(...)` method that performs the work and calls
+   `updateJob` at each stage to persist `status`/`progress`/`stage`/`message`.
 
-`runClusterJob` uses a `provisioningStep` slice to run a series of commands
-(currently sample `sleep` placeholders) and parses `Key: Value` lines from
-their combined output via `extractDetails` (so an `IP:` line lands in the job
-result and the cluster's `ip` column). Replace the sample steps with your real
-provisioning commands (e.g. `incus launch`, `incus exec`).
+## Incus Client
 
-See `CreateClusterJob`/`runClusterJob` for the reference pattern.
+`internal/incus` wraps the Incus Go SDK (`github.com/lxc/incus/v7/client`)
+over the unix socket shared by the incus container (see
+`meta/incusDocker/docker-compose.yml`'s `incus-socket-share` volume, mounted
+read-only into this app's container as `/shared-socket/incus.sock`, the
+`INCUS_SOCKET_PATH` default). It covers instance lifecycle (`Launch`,
+`Start`, `Stop`, `Delete`, `Get`, `List`, `WaitForIPv4`, `WaitForAgent`),
+in-VM command execution (`Exec`), and network management (`CreateNetwork`,
+`ListNetworks`, `GetNetwork`, `DeleteNetwork`).
 
 ## Development
 
@@ -175,12 +194,14 @@ Environment variables can be set via `.env` file or system environment:
 - `ENV` - Environment (development/production, default: development)
 - `DATABASE_URL` - Postgres connection string, e.g. `postgres://postgres:postgres@localhost:5432/incus_k8s_manager?sslmode=disable`. Used by both the app and the migrate CLI.
 - `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` - Fallback DB settings used to build the DSN when `DATABASE_URL` is not set.
+- `INCUS_SOCKET_PATH` - Path to the Incus unix socket (default: `/shared-socket/incus.sock`). Empty falls back to `$INCUS_SOCKET`/`$INCUS_DIR`/standard system paths.
 
 ## Dependencies
 
 - `github.com/gofiber/fiber/v3` - Web framework
 - `github.com/gofiber/schema` - Request validation
 - `github.com/google/uuid` - UUID generation
+- `github.com/lxc/incus/v7` - Incus Go SDK (instance lifecycle, exec, networks)
 
 ## Notes
 
@@ -191,9 +212,8 @@ Environment variables can be set via `.env` file or system environment:
 ## Future Enhancements
 
 - [ ] Recovery of interrupted jobs on server restart (currently marked by absence; orphaned `running` jobs are not re-run)
-- [ ] Incus VM creation / setup jobs (follow the `CreateClusterJob` pattern)
+- [ ] VM lifecycle jobs (launch nodes onto a cluster network, run `kubeadm`/join via `incus.Exec`)
 - [ ] Authentication and authorization
-- [ ] Container lifecycle management endpoints
 - [ ] Kubernetes cluster integration
 - [ ] Comprehensive error handling
 - [ ] Request validation middleware

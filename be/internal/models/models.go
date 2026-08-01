@@ -7,41 +7,43 @@ type StatusResponse struct {
 	Status map[string]string `json:"status"`
 }
 
-// ClusterStatus represents the state of a Kubernetes cluster
-type ClusterStatus string
+// ClusterNetworkStatus represents the state of a cluster network.
+type ClusterNetworkStatus string
 
 const (
-	ClusterStatusCreating ClusterStatus = "creating"
-	ClusterStatusReady    ClusterStatus = "ready"
-	ClusterStatusFailed   ClusterStatus = "failed"
-	ClusterStatusDeleting ClusterStatus = "deleting"
+	ClusterNetworkStatusCreating ClusterNetworkStatus = "creating"
+	ClusterNetworkStatusReady    ClusterNetworkStatus = "ready"
+	ClusterNetworkStatusFailed   ClusterNetworkStatus = "failed"
 )
 
-// Cluster represents a Kubernetes cluster
-type Cluster struct {
+// ClusterNetwork represents an Incus bridge network that cluster VMs are
+// launched onto. The name doubles as the underlying Incus/Linux bridge
+// interface name, so it is constrained to Incus's interface naming rules.
+type ClusterNetwork struct {
 	ID        string    `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"index" json:"name"`
-	Status    string    `gorm:"type:varchar(50)" json:"status"`
-	JobID     *string   `json:"jobId,omitempty"`
-	IP        string    `json:"ip,omitempty"`
+	Name      string    `gorm:"uniqueIndex" json:"name"`
+	CIDR      string    `gorm:"column:cidr" json:"cidr"`
+	Gateway   string    `json:"gateway"`
+	Status    string    `gorm:"type:varchar(20)" json:"status"`
 	Message   string    `json:"message,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// CreateClusterRequest represents the request to create a cluster
-type CreateClusterRequest struct {
-	Name string `json:"name" validate:"required,min=3,max=255"`
+// CreateClusterNetworkRequest represents the request to create a cluster network.
+type CreateClusterNetworkRequest struct {
+	Name string `json:"name"`
+	CIDR string `json:"cidr"`
 }
 
-// ClusterResponse wraps a single cluster
-type ClusterResponse struct {
-	Cluster Cluster `json:"cluster"`
+// ClusterNetworkResponse wraps a single cluster network.
+type ClusterNetworkResponse struct {
+	Network ClusterNetwork `json:"network"`
 }
 
-// ClusterListResponse wraps a list of clusters
-type ClusterListResponse struct {
-	Clusters []Cluster `json:"clusters"`
+// ClusterNetworkListResponse wraps a list of cluster networks.
+type ClusterNetworkListResponse struct {
+	Networks []ClusterNetwork `json:"networks"`
 }
 
 // JobStatus represents the lifecycle state of a long-running job.

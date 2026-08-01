@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/config"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/routes"
 	"github.com/gofiber/fiber/v3"
@@ -21,6 +22,11 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v\n", err)
 	}
 
+	incusClient, err := incus.New(cfg.IncusSocketPath)
+	if err != nil {
+		log.Fatalf("Failed to connect to incus: %v\n", err)
+	}
+
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName: "Incus K8s Manager API",
@@ -29,7 +35,7 @@ func main() {
 	jobManager := jobs.NewManager(db)
 
 	// Setup all routes
-	routes.SetupRoutes(app, jobManager, db)
+	routes.SetupRoutes(app, jobManager, db, incusClient)
 
 	// Start server
 	log.Printf("Starting server on :%s\n", cfg.Port)
