@@ -10,7 +10,7 @@ storage_pools:
     driver: dir
 
 networks:
-  - name: clustermanagerbr0
+  - name: clusterbr0
     type: bridge
     config:
       ipv4.address: auto
@@ -25,7 +25,7 @@ profiles:
     devices:
       eth0:
         type: nic
-        network: clustermanagerbr0
+        network: clusterbr0
         name: eth0
 
       root:

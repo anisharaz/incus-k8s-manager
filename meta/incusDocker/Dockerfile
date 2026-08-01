@@ -29,9 +29,10 @@ RUN chmod +x /start.sh
 
 # Bake the prebuilt k8s VM image into the image so start.sh can import
 # it into Incus during the one-time init step.
-# These files are staged into images/ by build.sh (produced by distrobuilder).
-COPY images/incus.tar.xz /incus-images/incus.tar.xz
-COPY images/disk.qcow2 /incus-images/disk.qcow2
+# These files come from the "vmimage" named build context — a temp dir that
+# build_docker_image.sh creates in /tmp and cleans up after the build.
+COPY --from=vmimage /incus.tar.xz /incus-images/incus.tar.xz
+COPY --from=vmimage /disk.qcow2 /incus-images/disk.qcow2
 
 # Healthcheck: verify incusd responds on the local API socket
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=12 \

@@ -8,7 +8,8 @@
 #   2. Ensures incusStuff/incus.tar.xz and incusStuff/disk.qcow2 exist;
 #      if not, runs:
 #        sudo distrobuilder build-incus incus_distrobuilder.yaml --vm .
-#   3. Stages the VM image files into this build context (images/).
+#   3. Stages the VM image files into a temp dir (/tmp), exposed to docker
+#      as the "vmimage" named build context, and deleted after the build.
 #   4. Runs `docker build` to produce anisharaz/kii:latest.
 #
 # Usage:
@@ -27,7 +28,12 @@ VM_DISK="$VM_DIR/disk.qcow2"
 
 IMAGE_NAME="${IMAGE_NAME:-anisharaz/kii:latest}"
 BUILD_CONTEXT="$SCRIPT_DIR"          # meta/incusDocker
-STAGE_DIR="$BUILD_CONTEXT/images"    # staged copies used by the Dockerfile
+# Temp staging dir for the VM image files; passed to docker as the
+# "vmimage" named build context and removed automatically on exit.
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kii-vm.XXXXXX")"
+
+cleanup() { rm -rf "$STAGE_DIR"; }
+trap cleanup EXIT
 
 BUILD_ARGS=()
 
@@ -67,20 +73,17 @@ else
     || fail "distrobuilder did not produce both incus.tar.xz and disk.qcow2."
 fi
 
-# --- 3. Stage the VM image files into the build context -----------------------
-mkdir -p "$STAGE_DIR"
+# --- 3. Stage the VM image files into the temp dir ----------------------------
 for f in incus.tar.xz disk.qcow2; do
-    src="$VM_DIR/$f"
-    dst="$STAGE_DIR/$f"
-    if [ ! -f "$dst" ] || [ "$src" -nt "$dst" ]; then
-        info "Staging $f into build context..."
-        cp -f "$src" "$dst"
-    else
-        info "$f already staged (up to date)."
-    fi
+    info "Staging $f into $STAGE_DIR..."
+    cp -f "$VM_DIR/$f" "$STAGE_DIR/$f"
 done
 
 # --- 4. Docker build ----------------------------------------------------------
 info "Building image '$IMAGE_NAME'..."
-docker build "${BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$BUILD_CONTEXT"
+# Pass the temp dir as the "vmimage" named build context so the Dockerfile
+# can COPY the VM image files without them living in the repo/build context.
+docker build "${BUILD_ARGS[@]}" \
+--build-context "vmimage=$STAGE_DIR" \
+-t "$IMAGE_NAME" "$BUILD_CONTEXT"
 info "Done. Image: $IMAGE_NAME"
