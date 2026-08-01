@@ -22,12 +22,12 @@ RUN echo "#!/bin/bash" > /sbin/systemctl && \
     apt autoremove -y && \
     apt-get clean
 
-# Copy the start script and preseed config into the image
-COPY start.sh /start.sh
-COPY ./incusStuff/incus-preseed.yaml /incus-preseed.yaml
-RUN chmod +x /start.sh
+# Copy the entrypoint script and preseed config into the image
+COPY entrypoint.sh /entrypoint.sh
+COPY ./incusStuff/incus_admin_config.yaml /incus_admin_config.yaml
+RUN chmod +x /entrypoint.sh
 
-# Bake the prebuilt k8s VM image into the image so start.sh can import
+# Bake the prebuilt k8s VM image into the image so entrypoint.sh can import
 # it into Incus during the one-time init step.
 # These files come from the "vmimage" named build context — a temp dir that
 # build_docker_image.sh creates in /tmp and cleans up after the build.
@@ -38,5 +38,5 @@ COPY --from=vmimage /disk.qcow2 /incus-images/disk.qcow2
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=12 \
     CMD incus query /1.0 >/dev/null 2>&1 || exit 1
 
-# Run the incusd binary via start.sh
-CMD ["/start.sh"]
+# Run the incusd binary via entrypoint.sh
+CMD ["/entrypoint.sh"]

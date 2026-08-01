@@ -77,7 +77,7 @@ done
 if [ -d /shared-socket ]; then
     echo "Starting socket proxy at /shared-socket/incus.sock..."
     socat UNIX-LISTEN:/shared-socket/incus.sock,fork,unlink-early,reuseaddr \
-          UNIX-CONNECT:/var/lib/incus/unix.socket &
+    UNIX-CONNECT:/var/lib/incus/unix.socket &
 fi
 
 # Complete the initial setup via preseed (only once).
@@ -88,7 +88,7 @@ if [ -f "$INIT_MARKER" ]; then
     echo "Incus already initialized — skipping preseed."
 else
     echo "Running incus admin init --preseed to complete setup..."
-    if incus admin init --preseed < /incus-preseed.yaml; then
+    if incus admin init --preseed < /incus_admin_config.yaml; then
         touch "$INIT_MARKER"
         echo "Preseed completed successfully."
         

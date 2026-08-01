@@ -4,15 +4,15 @@ This folder contains everything needed to build a containerized [Incus](https://
 
 ## Contents
 
-| File                 | Description                                                                                                                                                     |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile`         | Builds the image, installs Incus + dependencies, copies `start.sh`, the preseed config, and bakes in the prebuilt k8s VM image (`incus.tar.xz` + `disk.qcow2`). |
-| `start.sh`           | Entrypoint: starts `lxcfs`, `udevd`, `incusd`, then runs the preseed **and imports the k8s VM image** on first start (tracked by a marker in `/var/lib/incus`). |
-| `incus-preseed.yaml` | Preseed config: HTTPS on `:8443`, `default` dir pool, `clustermanagerbr0` bridge (NAT), default profile + project.                                              |
-| `run.sh`             | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, runs the container in the host netns and waits for it to become healthy.                            |
-| `docker-compose.yml` | Compose definition mirroring the `run.sh` options (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume).                  |
-| `build.sh`           | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.          |
-| `incusStuff/`        | Source folder for the k8s VM image: `incus_distrobuilder.yaml` (distrobuilder config) plus the built `incus.tar.xz` + `disk.qcow2`.                             |
+| File                      | Description                                                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`              | Builds the image, installs Incus + dependencies, copies `entrypoint.sh`, the preseed config, and bakes in the prebuilt k8s VM image (`incus.tar.xz` + `disk.qcow2`). |
+| `entrypoint.sh`           | Entrypoint: starts `lxcfs`, `udevd`, `incusd`, then runs the preseed **and imports the k8s VM image** on first start (tracked by a marker in `/var/lib/incus`).      |
+| `incus_admin_config.yaml` | Admin config: HTTPS on `:8443`, `default` dir pool, `clustermanagerbr0` bridge (NAT), default profile + project.                                                     |
+| `run.sh`                  | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, runs the container in the host netns and waits for it to become healthy.                                 |
+| `docker-compose.yml`      | Compose definition mirroring the `run.sh` options (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume).                       |
+| `build.sh`                | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.               |
+| `incusStuff/`             | Source folder for the k8s VM image: `incus_distrobuilder.yaml` (distrobuilder config) plus the built `incus.tar.xz` + `disk.qcow2`.                                  |
 
 ---
 
@@ -38,7 +38,7 @@ cd meta/incusDocker
 IMAGE_NAME=anisharaz/kii:v1.0.0 ./build.sh   # custom tag
 ```
 
-> **Note:** the build context is the `meta/incusDocker` folder, so `start.sh`, `incus-preseed.yaml`, and the staged `images/` (`incus.tar.xz` + `disk.qcow2`) are picked up automatically by the `COPY` instructions in the `Dockerfile`.
+> **Note:** the build context is the `meta/incusDocker` folder, so `entrypoint.sh`, `incus-preseed.yaml`, and the staged `images/` (`incus.tar.xz` + `disk.qcow2`) are picked up automatically by the `COPY` instructions in the `Dockerfile`.
 
 If you already have `incus.tar.xz` and `disk.qcow2` in `incusStuff/`, you can also build directly:
 
@@ -117,7 +117,7 @@ SETIPTABLES=true   # add ACCEPT rules to DOCKER-USER iptables chains
 
 > The Incus API listens on port **8443** directly on the host (no `-p` port mapping is needed with host networking).
 
-> The compose file also defines a named volume `incus-data` mounted at `/var/lib/incus`. It persists Incus state **and** the preseed marker across restarts/recreates, so `start.sh` only runs `incus admin init --preseed` on the very first start.
+> The compose file also defines a named volume `incus-data` mounted at `/var/lib/incus`. It persists Incus state **and** the preseed marker across restarts/recreates, so `entrypoint.sh` only runs `incus admin init --preseed` on the very first start.
 
 To find the correct `KVM_GID` for your system (it differs per distro — e.g. `990`, `78`, `36`):
 
@@ -203,14 +203,14 @@ docker run -d \
 
 ## Using Incus
 
-After the container starts, `start.sh` waits for `incusd` to be ready and then runs the preseed **only once** (tracked by a marker file at `/var/lib/incus/.preseed-done`). The preseed (`incus admin init --preseed < /incus-preseed.yaml`) configures:
+After the container starts, `entrypoint.sh` waits for `incusd` to be ready and then runs the preseed **only once** (tracked by a marker file at `/var/lib/incus/.preseed-done`). The preseed (`incus admin init --preseed < /incus-preseed.yaml`) configures:
 
 - Listens on `:8443` over HTTPS (`core.https_address`)
 - Creates the `default` storage pool (`dir` driver)
 - Creates the `clustermanagerbr0` bridge with IPv4/IPv6 NAT
 - Creates the `default` profile and `default` project
 
-Right after the preseed, `start.sh` imports the prebuilt k8s VM image baked into the image at `/incus-images/`:
+Right after the preseed, `entrypoint.sh` imports the prebuilt k8s VM image baked into the image at `/incus-images/`:
 
 ```bash
 incus image import /incus-images/incus.tar.xz /incus-images/disk.qcow2 --alias k8s

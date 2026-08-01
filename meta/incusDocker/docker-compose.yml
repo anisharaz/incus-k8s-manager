@@ -18,7 +18,7 @@ services:
       - incus-data:/var/lib/incus
       - /dev:/dev
       - /lib/modules:/lib/modules:ro
-      # Shared socket volume: start.sh proxies /var/lib/incus/unix.socket
+      # Shared socket volume: entrypoint.sh proxies /var/lib/incus/unix.socket
       # to /shared-socket/incus.sock so other containers can drive the API.
       - incus-socket-share:/shared-socket
 
