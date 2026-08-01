@@ -1,0 +1,282 @@
+package jobs
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
+	"github.com/google/uuid"
+)
+
+// nodeProvisionTimeout bounds how long a single node's VM launch and (for a
+// master) kubeadm init are allowed to take. Generous because kubeadm may
+// need to pull control-plane images on first run.
+const nodeProvisionTimeout = 15 * time.Minute
+
+// nodeImageAlias is the only VM image currently available: a prebaked
+// Ubuntu + Kubernetes image (see meta/incusDocker).
+const nodeImageAlias = "k8s"
+
+// rootKubeDir and rootKubeconfigPath are where the master's admin
+// kubeconfig is copied so `kubectl` works for the root user.
+const (
+	rootKubeDir        = "/root/.kube"
+	rootKubeconfigPath = rootKubeDir + "/config"
+)
+
+// NodeSize specifies a node's VM allocation, in Incus's config value format
+// (e.g. CPU: "2", Memory: "2GiB", Disk: "20GiB"). Callers are expected to
+// have already validated these against a sane minimum (see
+// handlers.validateNodeSize) — this package just passes them through to
+// Incus as-is.
+type NodeSize struct {
+	CPU    string
+	Memory string
+	Disk   string
+}
+
+// CreateNodeJob creates a node provisioning job and runs it in the
+// background: it launches the node's VM (sized per `size`) on the given
+// network, waits for it to get an IP and come up, and updates the node row
+// throughout. If the node is a master, it also runs `kubeadm init`, copies
+// the admin kubeconfig, and waits for the API server to report healthy
+// before the job is marked complete. It does NOT run `kubeadm join` for
+// workers yet.
+func (m *Manager) CreateNodeJob(nodeID, incusName, networkIncusName, role string, size NodeSize) (*models.Job, error) {
+	now := time.Now().UTC()
+	job := &models.Job{
+		ID:        uuid.NewString(),
+		Type:      "node_provision",
+		Name:      fmt.Sprintf("Provision %s node %s", role, incusName),
+		Status:    models.JobStatusQueued,
+		Progress:  0,
+		Stage:     "queued",
+		Message:   "Node provisioning job accepted",
+		Metadata:  map[string]string{"nodeId": nodeID, "role": role},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := m.db.Create(job).Error; err != nil {
+		return nil, err
+	}
+
+	go m.runNodeJob(job.ID, nodeID, incusName, networkIncusName, role, size)
+
+	return job, nil
+}
+
+// runNodeJob launches the node's VM, waits for it to get an IPv4 address
+// and for the guest agent to come up, then (for a master) runs kubeadm init
+// and waits for the cluster to become healthy, before marking the node
+// running. If the node is a cluster's master, it also updates the
+// cluster's status.
+func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role string, size NodeSize) {
+	ctx, cancel := context.WithTimeout(context.Background(), nodeProvisionTimeout)
+	defer cancel()
+
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Status = models.JobStatusRunning
+		job.Stage = "launching"
+		job.Progress = 10
+		job.Message = "Launching VM..."
+	})
+	m.updateNode(nodeID, map[string]any{
+		"status":  string(models.NodeStatusCreating),
+		"message": "Launching VM",
+	})
+
+	if err := m.incus.Launch(ctx, incusName, nodeImageAlias, networkIncusName, size.CPU, size.Memory, size.Disk, true); err != nil {
+		m.failNodeJob(jobID, nodeID, err)
+		return
+	}
+
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Stage = "waiting-for-ip"
+		job.Progress = 40
+		job.Message = "Waiting for VM IP address..."
+	})
+
+	ip, err := m.incus.WaitForIPv4(ctx, incusName)
+	if err != nil {
+		m.failNodeJob(jobID, nodeID, err)
+		return
+	}
+	m.updateNode(nodeID, map[string]any{"ip": ip})
+
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Stage = "waiting-for-agent"
+		job.Progress = 70
+		job.Message = "Waiting for guest agent..."
+	})
+
+	if err := m.incus.WaitForAgent(ctx, incusName); err != nil {
+		m.failNodeJob(jobID, nodeID, err)
+		return
+	}
+
+	finalMessage := "VM is running"
+
+	if role == string(models.NodeRoleMaster) {
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "waiting-for-containerd"
+			job.Progress = 75
+			job.Message = "Waiting for container runtime..."
+		})
+
+		// The guest agent can respond before containerd has finished
+		// starting (both come up during boot), and kubeadm init requires
+		// a working CRI socket, so wait for it explicitly.
+		if err := m.waitForContainerd(ctx, incusName); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "bootstrapping"
+			job.Progress = 80
+			job.Message = "Running kubeadm init..."
+		})
+		m.updateNode(nodeID, map[string]any{"message": "Running kubeadm init"})
+
+		if _, err := m.incus.Run(ctx, incusName, []string{"kubeadm", "init"}); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "configuring-kubeconfig"
+			job.Progress = 90
+			job.Message = "Copying admin.conf for the root user..."
+		})
+
+		copyKubeconfig := []string{"bash", "-c", fmt.Sprintf(
+			"mkdir -p %s && cp -f /etc/kubernetes/admin.conf %s",
+			rootKubeDir, rootKubeconfigPath,
+		)}
+		if _, err := m.incus.Run(ctx, incusName, copyKubeconfig); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "verifying"
+			job.Progress = 95
+			job.Message = "Waiting for cluster API to become healthy..."
+		})
+
+		if err := m.waitForClusterHealthy(ctx, incusName); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		finalMessage = "Kubernetes control plane is ready"
+	}
+
+	completedAt := time.Now().UTC()
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Status = models.JobStatusSucceeded
+		job.Progress = 100
+		job.Stage = "complete"
+		job.Message = finalMessage
+		job.Result = map[string]any{"ip": ip}
+		job.CompletedAt = &completedAt
+	})
+
+	m.updateNode(nodeID, map[string]any{
+		"status":  string(models.NodeStatusRunning),
+		"message": finalMessage,
+	})
+
+	m.setClusterStatusIfMaster(nodeID, models.ClusterStatusReady, finalMessage)
+}
+
+// waitForContainerd polls for the containerd CRI socket, which kubeadm init
+// requires, since it can still be starting when the guest agent responds.
+func (m *Manager) waitForContainerd(ctx context.Context, incusName string) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	checkCmd := []string{"test", "-S", "/var/run/containerd/containerd.sock"}
+
+	for {
+		result, err := m.incus.Exec(ctx, incusName, checkCmd, nil)
+		if err == nil && result.ExitCode == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("containerd did not become ready on instance %q: %w", incusName, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// waitForClusterHealthy polls the API server's /healthz endpoint (via the
+// root kubeconfig copied by runNodeJob) until it reports "ok".
+func (m *Manager) waitForClusterHealthy(ctx context.Context, incusName string) error {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	healthCmd := []string{"kubectl", "--kubeconfig=" + rootKubeconfigPath, "get", "--raw=/healthz"}
+
+	for {
+		result, err := m.incus.Exec(ctx, incusName, healthCmd, nil)
+		if err == nil && result.ExitCode == 0 && strings.TrimSpace(result.Stdout) == "ok" {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("cluster API on instance %q did not become healthy: %w", incusName, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// failNodeJob marks the job and node as failed, and fails the cluster too
+// if this was its master node.
+func (m *Manager) failNodeJob(jobID, nodeID string, runErr error) {
+	completedAt := time.Now().UTC()
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Status = models.JobStatusFailed
+		job.Progress = 100
+		job.Stage = "failed"
+		job.Message = "Node provisioning failed"
+		job.Error = runErr.Error()
+		job.CompletedAt = &completedAt
+	})
+
+	m.updateNode(nodeID, map[string]any{
+		"status":  string(models.NodeStatusFailed),
+		"message": "Node provisioning failed: " + runErr.Error(),
+	})
+
+	m.setClusterStatusIfMaster(nodeID, models.ClusterStatusFailed, "Master node provisioning failed")
+}
+
+// updateNode applies partial updates to a node row.
+func (m *Manager) updateNode(nodeID string, updates map[string]any) {
+	m.db.Model(&models.Node{}).Where("id = ?", nodeID).Updates(updates)
+}
+
+// setClusterStatusIfMaster updates a cluster's status when the given node
+// is its master. Worker node outcomes don't change cluster status.
+func (m *Manager) setClusterStatusIfMaster(nodeID string, status models.ClusterStatus, message string) {
+	var node models.Node
+	if err := m.db.Where("id = ?", nodeID).First(&node).Error; err != nil {
+		return
+	}
+
+	if node.Role != string(models.NodeRoleMaster) {
+		return
+	}
+
+	m.db.Model(&models.Cluster{}).Where("id = ?", node.ClusterID).Updates(map[string]any{
+		"status":  string(status),
+		"message": message,
+	})
+}

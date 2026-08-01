@@ -32,7 +32,7 @@ func main() {
 		AppName: "Incus K8s Manager API",
 	})
 
-	jobManager := jobs.NewManager(db)
+	jobManager := jobs.NewManager(db, incusClient)
 
 	// Setup all routes
 	routes.SetupRoutes(app, jobManager, db, incusClient)

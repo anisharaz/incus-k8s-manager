@@ -93,3 +93,20 @@ func (c *Client) Exec(ctx context.Context, name string, command []string, env ma
 
 	return result, nil
 }
+
+// Run behaves like Exec but additionally treats a non-zero exit code as an
+// error (including stderr for debuggability). Use Exec directly when the
+// caller needs to inspect a non-zero exit itself (e.g. polling for
+// readiness where "not ready yet" is expected, not exceptional).
+func (c *Client) Run(ctx context.Context, name string, command []string) (*ExecResult, error) {
+	result, err := c.Exec(ctx, name, command, nil)
+	if err != nil {
+		return result, err
+	}
+
+	if result.ExitCode != 0 {
+		return result, fmt.Errorf("command %q in instance %q exited %d: %s", strings.Join(command, " "), name, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+
+	return result, nil
+}

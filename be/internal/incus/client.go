@@ -30,9 +30,19 @@ func New(socketPath string) (*Client, error) {
 	return &Client{server: server}, nil
 }
 
-// Launch creates a new instance from the given image alias and starts it,
-// blocking until the operation completes.
-func (c *Client) Launch(ctx context.Context, name, imageAlias string, vm bool) error {
+// rootStoragePool is the only storage pool the appliance configures (see
+// meta/incusDocker/incusStuff/incus_admin_config.yaml).
+const rootStoragePool = "default"
+
+// Launch creates a new instance from the given image alias, attaches its
+// eth0 device to the given network (overriding whatever network the
+// default profile would otherwise assign), sizes it with the given CPU
+// count, memory limit, and root disk size (Incus config value format, e.g.
+// "2", "2GiB", "20GiB" — the default profile's limits are too small for
+// kubeadm's preflight checks), and starts it, blocking until the operation
+// completes. The VM image grows its root filesystem to fill this disk size
+// on first boot (see incus-growpart in meta/incusDocker).
+func (c *Client) Launch(ctx context.Context, name, imageAlias, network, cpu, memory, diskSize string, vm bool) error {
 	instanceType := api.InstanceTypeContainer
 	if vm {
 		instanceType = api.InstanceTypeVM
@@ -45,6 +55,24 @@ func (c *Client) Launch(ctx context.Context, name, imageAlias string, vm bool) e
 		Source: api.InstanceSource{
 			Type:  "image",
 			Alias: imageAlias,
+		},
+		InstancePut: api.InstancePut{
+			Config: api.ConfigMap{
+				"limits.cpu":    cpu,
+				"limits.memory": memory,
+			},
+			Devices: api.DevicesMap{
+				"eth0": {
+					"type":    "nic",
+					"network": network,
+				},
+				"root": {
+					"type": "disk",
+					"pool": rootStoragePool,
+					"path": "/",
+					"size": diskSize,
+				},
+			},
 		},
 	}
 

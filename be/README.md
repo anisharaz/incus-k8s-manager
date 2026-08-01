@@ -111,6 +111,16 @@ be/
 - **GET** `/api/v1/jobs` - List all background jobs
 - **GET** `/api/v1/jobs/:id` - Get a single job (status, progress, result)
 
+### Users
+
+No authentication yet — a user only exists to own cluster networks,
+clusters, and nodes. `ownerId` on the endpoints below must reference a real
+user (violations surface as a raw FK-violation 500 for now).
+
+- **POST** `/api/v1/users` - Create a user (`{"username": "..."}`)
+- **GET** `/api/v1/users` - List all users
+- **GET** `/api/v1/users/:id` - Get a single user
+
 ### Cluster Networks
 
 An Incus bridge network that cluster VMs are later launched onto. Creation
@@ -118,13 +128,41 @@ validates the CIDR against every network Incus currently knows about
 (managed or not) to avoid overlaps, then creates the Incus bridge network
 synchronously (no background job needed).
 
-- **POST** `/api/v1/networks` - Create a cluster network (`{"name": "...", "cidr": "10.10.0.0/24"}`)
+- **POST** `/api/v1/networks` - Create a cluster network (`{"ownerId": "...", "name": "...", "cidr": "10.10.0.0/24"}`)
 - **GET** `/api/v1/networks` - List all cluster networks
 - **GET** `/api/v1/networks/:id` - Get a single cluster network
 - **DELETE** `/api/v1/networks/:id` - Delete a cluster network (fails if still in use by an instance)
 
-`name` doubles as the underlying Linux bridge interface name, so it must
-satisfy Incus's interface naming rules (2-15 characters, `[-_a-zA-Z0-9.]`).
+`name` is a free-form display name, unique per owner. The actual Incus
+bridge interface name is system-generated (`incusName` in the response) to
+satisfy Incus's restrictive interface naming rules (<=15 characters) without
+constraining what the user can call it.
+
+### Clusters
+
+Creating a cluster launches its master node's VM (on the chosen cluster
+network) as a background job — see Jobs above to poll progress. For the
+master, the job also runs `kubeadm init`, copies `/etc/kubernetes/admin.conf`
+to `/root/.kube/config`, and polls the API server's `/healthz` until it's
+ready before marking the job complete. No CNI plugin is installed, so
+`kubectl get nodes` shows the master as `NotReady` — pod networking is a
+later step, as is `kubeadm join` for workers.
+
+`cpu` (int), `memory`, and `disk` (Incus size format, e.g. `"4GiB"`) size the
+master's VM; each is optional and falls back to a default if omitted. All
+three are validated against a minimum — `cpu`/`memory` match kubeadm's own
+hard preflight requirements (2 CPUs, 1700MB), `disk` is this app's own floor
+(20GiB, not kubeadm-enforced) — a value below the minimum is rejected with a
+400, not silently clamped.
+
+- **POST** `/api/v1/clusters` - Create a cluster + master node (`{"ownerId": "...", "networkId": "...", "name": "...", "cpu": 2, "memory": "2GiB", "disk": "20GiB"}`)
+- **GET** `/api/v1/clusters` - List all clusters
+- **GET** `/api/v1/clusters/:id` - Get a single cluster
+- **GET** `/api/v1/clusters/:id/nodes` - List a cluster's nodes (master first), each with its `jobId`, `status`, and `ip`
+
+Like cluster networks, a node's `name` (e.g. `master`) is a display name
+unique within its cluster; `incusName` is the system-generated, globally
+unique Incus VM instance name.
 
 ## Available Commands
 
@@ -145,15 +183,16 @@ make help        # Show this help message
 
 ## Adding a New Job Type
 
-The job manager (`internal/jobs/manager.go`) is intentionally a bare
-scaffold: `Manager` plus `List`/`Get`/`updateJob`. It has no job types yet
-(cluster network creation is synchronous and doesn't need one). To add one
-for a long-running task (e.g. VM provisioning):
+`internal/jobs/manager.go` holds the generic scaffold: `Manager` plus
+`List`/`Get`/`updateJob`. Each job type gets its own file (see
+`internal/jobs/node.go`'s `node_provision` type, used by cluster creation to
+launch a node's VM without blocking the request):
 
-1. Add a `Create<Job>Job(...)` method that builds a `models.Job`, persists it
-   as `queued`, and starts a goroutine.
-2. Add a `run<Job>Job(...)` method that performs the work and calls
-   `updateJob` at each stage to persist `status`/`progress`/`stage`/`message`.
+1. A `Create<Job>Job(...)` method that builds a `models.Job`, persists it as
+   `queued`, and starts a goroutine.
+2. A `run<Job>Job(...)` method that performs the work and calls `updateJob`
+   at each stage to persist `status`/`progress`/`stage`/`message`, updating
+   related rows (e.g. the node/cluster) as it goes via direct `m.db` calls.
 
 ## Incus Client
 
@@ -212,9 +251,11 @@ Environment variables can be set via `.env` file or system environment:
 ## Future Enhancements
 
 - [ ] Recovery of interrupted jobs on server restart (currently marked by absence; orphaned `running` jobs are not re-run)
-- [ ] VM lifecycle jobs (launch nodes onto a cluster network, run `kubeadm`/join via `incus.Exec`)
+- [ ] CNI installation (nodes stay `NotReady` in `kubectl get nodes` without one)
+- [ ] Add-worker-node endpoint + `kubeadm join` (schema already supports it; `CreateNodeJob` is role-agnostic, just needs the join command/token plumbed through)
+- [ ] Deleting a cluster/node (stop + delete the Incus VM, not just the DB row)
 - [ ] Authentication and authorization
-- [ ] Kubernetes cluster integration
+- [ ] Ownership existence checks (an invalid `ownerId`/`networkId` currently surfaces as a raw FK-violation 500, not a clean 400/404)
 - [ ] Comprehensive error handling
 - [ ] Request validation middleware
 - [ ] API documentation (Swagger)

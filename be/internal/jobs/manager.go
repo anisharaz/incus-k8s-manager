@@ -3,6 +3,7 @@ package jobs
 import (
 	"time"
 
+	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"gorm.io/gorm"
 )
@@ -10,12 +11,13 @@ import (
 // Manager runs and tracks long-running background jobs.
 // Job state is persisted to the database (source of truth).
 type Manager struct {
-	db *gorm.DB
+	db    *gorm.DB
+	incus *incus.Client
 }
 
 // NewManager creates a new job manager backed by the given database.
-func NewManager(db *gorm.DB) *Manager {
-	return &Manager{db: db}
+func NewManager(db *gorm.DB, incusClient *incus.Client) *Manager {
+	return &Manager{db: db, incus: incusClient}
 }
 
 // List returns all jobs in reverse chronological order.

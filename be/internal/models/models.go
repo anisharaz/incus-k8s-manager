@@ -101,11 +101,16 @@ type Cluster struct {
 }
 
 // CreateClusterRequest represents the request to create a cluster. Creating
-// a cluster launches its master node.
+// a cluster launches its master node's VM sized to CPU/Memory/Disk (each
+// optional — omitted or zero-value falls back to the minimum). Memory and
+// Disk use Incus's size format (e.g. "2GiB", "20GiB").
 type CreateClusterRequest struct {
 	OwnerID   string `json:"ownerId"`
 	NetworkID string `json:"networkId"`
 	Name      string `json:"name"`
+	CPU       int    `json:"cpu,omitempty"`
+	Memory    string `json:"memory,omitempty"`
+	Disk      string `json:"disk,omitempty"`
 }
 
 // ClusterResponse wraps a single cluster.
@@ -190,9 +195,9 @@ type Job struct {
 	Progress    int               `json:"progress"`
 	Stage       string            `json:"stage,omitempty"`
 	Message     string            `json:"message,omitempty"`
-	Result      map[string]any    `gorm:"type:jsonb" json:"result,omitempty"`
+	Result      map[string]any    `gorm:"type:jsonb;serializer:json" json:"result,omitempty"`
 	Error       string            `json:"error,omitempty"`
-	Metadata    map[string]string `gorm:"type:jsonb" json:"metadata,omitempty"`
+	Metadata    map[string]string `gorm:"type:jsonb;serializer:json" json:"metadata,omitempty"`
 	CreatedAt   time.Time         `json:"createdAt"`
 	UpdatedAt   time.Time         `json:"updatedAt"`
 	CompletedAt *time.Time        `json:"completedAt,omitempty"`
