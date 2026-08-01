@@ -7,6 +7,30 @@ type StatusResponse struct {
 	Status map[string]string `json:"status"`
 }
 
+// User owns cluster networks, clusters, and nodes. There is no
+// authentication yet — this only tracks resource ownership.
+type User struct {
+	ID        string    `gorm:"primaryKey" json:"id"`
+	Username  string    `gorm:"uniqueIndex" json:"username"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CreateUserRequest represents the request to create a user.
+type CreateUserRequest struct {
+	Username string `json:"username"`
+}
+
+// UserResponse wraps a single user.
+type UserResponse struct {
+	User User `json:"user"`
+}
+
+// UserListResponse wraps a list of users.
+type UserListResponse struct {
+	Users []User `json:"users"`
+}
+
 // ClusterNetworkStatus represents the state of a cluster network.
 type ClusterNetworkStatus string
 
@@ -17,11 +41,15 @@ const (
 )
 
 // ClusterNetwork represents an Incus bridge network that cluster VMs are
-// launched onto. The name doubles as the underlying Incus/Linux bridge
-// interface name, so it is constrained to Incus's interface naming rules.
+// launched onto. Name is a user-facing display name, unique per owner;
+// IncusName is a system-generated name satisfying Incus's bridge interface
+// naming rules (<=15 chars) and is globally unique, since it lives in
+// Incus's single namespace regardless of owner.
 type ClusterNetwork struct {
 	ID        string    `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"uniqueIndex" json:"name"`
+	OwnerID   string    `gorm:"column:owner_id;index" json:"ownerId"`
+	Name      string    `json:"name"`
+	IncusName string    `gorm:"column:incus_name;uniqueIndex" json:"incusName"`
 	CIDR      string    `gorm:"column:cidr" json:"cidr"`
 	Gateway   string    `json:"gateway"`
 	Status    string    `gorm:"type:varchar(20)" json:"status"`
@@ -32,8 +60,9 @@ type ClusterNetwork struct {
 
 // CreateClusterNetworkRequest represents the request to create a cluster network.
 type CreateClusterNetworkRequest struct {
-	Name string `json:"name"`
-	CIDR string `json:"cidr"`
+	OwnerID string `json:"ownerId"`
+	Name    string `json:"name"`
+	CIDR    string `json:"cidr"`
 }
 
 // ClusterNetworkResponse wraps a single cluster network.
@@ -44,6 +73,102 @@ type ClusterNetworkResponse struct {
 // ClusterNetworkListResponse wraps a list of cluster networks.
 type ClusterNetworkListResponse struct {
 	Networks []ClusterNetwork `json:"networks"`
+}
+
+// ClusterStatus represents the state of a cluster.
+type ClusterStatus string
+
+const (
+	ClusterStatusCreating ClusterStatus = "creating"
+	ClusterStatusReady    ClusterStatus = "ready"
+	ClusterStatusFailed   ClusterStatus = "failed"
+	ClusterStatusDeleting ClusterStatus = "deleting"
+)
+
+// Cluster represents a Kubernetes cluster: a named group of nodes (one
+// master, zero or more workers) launched onto a single cluster network.
+// Name is a display name, unique per owner; a cluster isn't itself an Incus
+// resource, so it has no separate Incus-facing name (its nodes do).
+type Cluster struct {
+	ID        string    `gorm:"primaryKey" json:"id"`
+	OwnerID   string    `gorm:"column:owner_id;index" json:"ownerId"`
+	NetworkID string    `gorm:"column:network_id;index" json:"networkId"`
+	Name      string    `json:"name"`
+	Status    string    `gorm:"type:varchar(20)" json:"status"`
+	Message   string    `json:"message,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CreateClusterRequest represents the request to create a cluster. Creating
+// a cluster launches its master node.
+type CreateClusterRequest struct {
+	OwnerID   string `json:"ownerId"`
+	NetworkID string `json:"networkId"`
+	Name      string `json:"name"`
+}
+
+// ClusterResponse wraps a single cluster.
+type ClusterResponse struct {
+	Cluster Cluster `json:"cluster"`
+}
+
+// ClusterListResponse wraps a list of clusters.
+type ClusterListResponse struct {
+	Clusters []Cluster `json:"clusters"`
+}
+
+// NodeRole distinguishes a cluster's control-plane node from its workers.
+type NodeRole string
+
+const (
+	NodeRoleMaster NodeRole = "master"
+	NodeRoleWorker NodeRole = "worker"
+)
+
+// NodeStatus represents the state of a node's underlying Incus VM.
+type NodeStatus string
+
+const (
+	NodeStatusCreating NodeStatus = "creating"
+	NodeStatusRunning  NodeStatus = "running"
+	NodeStatusStopped  NodeStatus = "stopped"
+	NodeStatusFailed   NodeStatus = "failed"
+	NodeStatusDeleting NodeStatus = "deleting"
+)
+
+// Node represents a single Incus VM backing a cluster's master or a worker.
+// Name is a display name, unique within its cluster (e.g. "master",
+// "worker-1"); IncusName is a system-generated name satisfying Incus's
+// instance hostname rules (<=63 chars) and is globally unique, since it
+// lives in Incus's single namespace regardless of cluster/owner.
+type Node struct {
+	ID        string    `gorm:"primaryKey" json:"id"`
+	ClusterID string    `gorm:"column:cluster_id;index" json:"clusterId"`
+	JobID     *string   `gorm:"column:job_id" json:"jobId,omitempty"`
+	Name      string    `json:"name"`
+	IncusName string    `gorm:"column:incus_name;uniqueIndex" json:"incusName"`
+	Role      string    `gorm:"type:varchar(10)" json:"role"`
+	Status    string    `gorm:"type:varchar(20)" json:"status"`
+	IP        string    `json:"ip,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CreateNodeRequest represents the request to add a worker node to a cluster.
+type CreateNodeRequest struct {
+	ClusterID string `json:"clusterId"`
+}
+
+// NodeResponse wraps a single node.
+type NodeResponse struct {
+	Node Node `json:"node"`
+}
+
+// NodeListResponse wraps a list of nodes.
+type NodeListResponse struct {
+	Nodes []Node `json:"nodes"`
 }
 
 // JobStatus represents the lifecycle state of a long-running job.

@@ -13,6 +13,7 @@ import (
 func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusClient *incus.Client) {
 	taskHandlers := handlers.NewTaskHandlers(jobManager)
 	networkHandlers := handlers.NewNetworkHandlers(db, incusClient)
+	userHandlers := handlers.NewUserHandlers(db)
 
 	// Apply global middleware
 	app.Use(middleware.LoggerMiddleware())
@@ -28,6 +29,12 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Get("/status", handlers.StatusHandler)
 	v1.Get("/jobs", taskHandlers.ListJobs)
 	v1.Get("/jobs/:id", taskHandlers.GetJob)
+
+	// User routes
+	v1.Post("/users", userHandlers.CreateUser)
+	v1.Get("/users", userHandlers.ListUsers)
+	v1.Get("/users/:id", userHandlers.GetUser)
+	v1.Delete("/users/:id", userHandlers.DeleteUser)
 
 	// Cluster network routes
 	v1.Post("/networks", networkHandlers.CreateNetwork)

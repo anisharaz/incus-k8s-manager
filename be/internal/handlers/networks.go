@@ -13,7 +13,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	incusapi "github.com/lxc/incus/v7/shared/api"
-	incusvalidate "github.com/lxc/incus/v7/shared/validate"
 	"gorm.io/gorm"
 )
 
@@ -41,11 +40,20 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 		})
 	}
 
-	req.Name = strings.TrimSpace(req.Name)
-	if err := incusvalidate.IsInterfaceName(req.Name); err != nil {
+	req.OwnerID = strings.TrimSpace(req.OwnerID)
+	if req.OwnerID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
 			Error:   "validation error",
-			Message: "name: " + err.Error(),
+			Message: "ownerId is required",
+			Code:    fiber.StatusBadRequest,
+		})
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" || len(req.Name) > 63 {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "validation error",
+			Message: "name must be between 1 and 63 characters",
 			Code:    fiber.StatusBadRequest,
 		})
 	}
@@ -61,13 +69,14 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 	}
 	gateway := gatewayForNetwork(network)
 
-	// Fast pre-check for a friendlier duplicate-name error than Incus's own.
+	// Fast pre-check for a friendlier duplicate-name error than the DB's own.
+	// Name only needs to be unique within the owner's own networks.
 	var count int64
-	h.db.Model(&models.ClusterNetwork{}).Where("name = ?", req.Name).Count(&count)
+	h.db.Model(&models.ClusterNetwork{}).Where("owner_id = ? AND name = ?", req.OwnerID, req.Name).Count(&count)
 	if count > 0 {
 		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
 			Error:   "network already exists",
-			Message: "a cluster network with this name already exists",
+			Message: "you already have a cluster network with this name",
 			Code:    fiber.StatusConflict,
 		})
 	}
@@ -96,7 +105,10 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 		"ipv6.address": "none",
 	}
 
-	if err := h.incus.CreateNetwork(req.Name, incusConfig); err != nil {
+	id := uuid.New().String()
+	incusName := generateIncusNetworkName(id)
+
+	if err := h.incus.CreateNetwork(incusName, incusConfig); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "incus error",
 			Message: err.Error(),
@@ -105,18 +117,20 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 	}
 
 	clusterNetwork := models.ClusterNetwork{
-		ID:      uuid.New().String(),
-		Name:    req.Name,
-		CIDR:    network.String(),
-		Gateway: gateway.String(),
-		Status:  string(models.ClusterNetworkStatusReady),
-		Message: "Network created",
+		ID:        id,
+		OwnerID:   req.OwnerID,
+		Name:      req.Name,
+		IncusName: incusName,
+		CIDR:      network.String(),
+		Gateway:   gateway.String(),
+		Status:    string(models.ClusterNetworkStatusReady),
+		Message:   "Network created",
 	}
 
 	if err := h.db.Create(&clusterNetwork).Error; err != nil {
 		// Roll back the Incus-side network so the name isn't stuck
 		// existing-in-Incus-but-unknown-to-us after a DB failure.
-		_ = h.incus.DeleteNetwork(req.Name)
+		_ = h.incus.DeleteNetwork(incusName)
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "database error",
 			Message: err.Error(),
@@ -182,7 +196,7 @@ func (h *NetworkHandlers) DeleteNetwork(c fiber.Ctx) error {
 
 	// Incus refuses to delete a network still in use by an instance, so any
 	// error here (e.g. "network in use") is returned as-is.
-	if err := h.incus.DeleteNetwork(network.Name); err != nil {
+	if err := h.incus.DeleteNetwork(network.IncusName); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "incus error",
 			Message: err.Error(),
@@ -223,6 +237,20 @@ func parseClusterCIDR(cidr string) (*net.IPNet, error) {
 	}
 
 	return ipnet, nil
+}
+
+// generateIncusNetworkName derives a globally-unique, Incus-safe bridge
+// interface name (<=15 chars, satisfying validate.IsInterfaceName) from a
+// resource ID, so the user-facing display name is free of Incus's
+// restrictive interface naming rules and per-owner uniqueness scope.
+func generateIncusNetworkName(id string) string {
+	const prefix = "cn"
+	compact := strings.ReplaceAll(id, "-", "")
+	maxSuffixLen := 15 - len(prefix)
+	if len(compact) > maxSuffixLen {
+		compact = compact[:maxSuffixLen]
+	}
+	return prefix + compact
 }
 
 // gatewayForNetwork returns the first usable address in the network (the
