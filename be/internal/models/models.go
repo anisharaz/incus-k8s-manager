@@ -54,29 +54,21 @@ const (
 	JobStatusFailed    JobStatus = "failed"
 )
 
-// Job represents a long-running background task.
+// Job represents a long-running background task. It is persisted to the jobs table.
 type Job struct {
-	ID              string            `json:"id"`
-	Type            string            `json:"type"`
-	Name            string            `json:"name,omitempty"`
-	Status          JobStatus         `json:"status"`
-	Progress        int               `json:"progress"`
-	Stage           string            `json:"stage,omitempty"`
-	Message         string            `json:"message,omitempty"`
-	Result          map[string]any    `json:"result,omitempty"`
-	Error           string            `json:"error,omitempty"`
-	DurationSeconds int               `json:"durationSeconds,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
-	CreatedAt       time.Time         `json:"createdAt"`
-	UpdatedAt       time.Time         `json:"updatedAt"`
-	CompletedAt     *time.Time        `json:"completedAt,omitempty"`
-}
-
-// DemoJobRequest represents a sample long-running task submission.
-type DemoJobRequest struct {
-	Name            string            `json:"name"`
-	DurationSeconds int               `json:"durationSeconds"`
-	Metadata        map[string]string `json:"metadata"`
+	ID          string            `gorm:"primaryKey" json:"id"`
+	Type        string            `gorm:"index" json:"type"`
+	Name        string            `json:"name,omitempty"`
+	Status      JobStatus         `gorm:"type:varchar(20);index" json:"status"`
+	Progress    int               `json:"progress"`
+	Stage       string            `json:"stage,omitempty"`
+	Message     string            `json:"message,omitempty"`
+	Result      map[string]any    `gorm:"type:jsonb" json:"result,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	Metadata    map[string]string `gorm:"type:jsonb" json:"metadata,omitempty"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+	CompletedAt *time.Time        `json:"completedAt,omitempty"`
 }
 
 // JobListResponse wraps a list of jobs.

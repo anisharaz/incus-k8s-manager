@@ -27,7 +27,6 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB) {
 	v1.Get("/status", handlers.StatusHandler)
 	v1.Get("/jobs", taskHandlers.ListJobs)
 	v1.Get("/jobs/:id", taskHandlers.GetJob)
-	v1.Post("/jobs/demo", taskHandlers.CreateDemoJob)
 
 	// Cluster routes
 	v1.Post("/clusters", clusterHandlers.CreateCluster)

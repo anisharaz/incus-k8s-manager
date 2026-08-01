@@ -83,7 +83,14 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 	}
 
 	// Create a background job for cluster creation
-	job := h.manager.CreateClusterJob(clusterID, req.Name)
+	job, err := h.manager.CreateClusterJob(clusterID, req.Name)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "job creation error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
 
 	// Update cluster with job ID
 	cluster.JobID = &job.ID

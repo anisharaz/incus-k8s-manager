@@ -1,13 +1,8 @@
 package jobs
 
 import (
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
@@ -15,313 +10,203 @@ import (
 	"gorm.io/gorm"
 )
 
-const defaultDemoDurationSeconds = 10
-
-// Manager stores and runs in-memory jobs.
+// Manager runs and tracks long-running background jobs.
+// Job state is persisted to the database (source of truth).
 type Manager struct {
-	mu   sync.RWMutex
-	jobs map[string]*models.Job
-	db   *gorm.DB
+	db *gorm.DB
 }
 
-// NewManager creates a new job manager.
-func NewManager() *Manager {
-	return &Manager{jobs: make(map[string]*models.Job)}
+// NewManager creates a new job manager backed by the given database.
+func NewManager(db *gorm.DB) *Manager {
+	return &Manager{db: db}
 }
 
-// NewManagerWithDB creates a new job manager with database connection
-func NewManagerWithDB(db *gorm.DB) *Manager {
-	return &Manager{
-		jobs: make(map[string]*models.Job),
-		db:   db,
-	}
-}
-
-// SetDatabase sets the database connection for the manager
-func (m *Manager) SetDatabase(db *gorm.DB) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.db = db
-}
-
-// CreateDemoJob creates a demo long-running job and starts it in the background.
-func (m *Manager) CreateDemoJob(request models.DemoJobRequest) models.Job {
-	durationSeconds := request.DurationSeconds
-	if durationSeconds <= 0 {
-		durationSeconds = defaultDemoDurationSeconds
-	}
-
+// CreateClusterJob creates a cluster creation job and runs it in the background.
+// It inserts a queued job row, spawns a goroutine, and returns the persisted job.
+func (m *Manager) CreateClusterJob(clusterID, clusterName string) (*models.Job, error) {
 	now := time.Now().UTC()
 	job := &models.Job{
-		ID:              uuid.NewString(),
-		Type:            "demo",
-		Name:            strings.TrimSpace(request.Name),
-		Status:          models.JobStatusQueued,
-		Progress:        0,
-		Stage:           "queued",
-		Message:         "Job accepted and waiting to start",
-		DurationSeconds: durationSeconds,
-		Metadata:        request.Metadata,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-
-	m.mu.Lock()
-	m.jobs[job.ID] = job
-	m.mu.Unlock()
-
-	go m.runDemoJob(job.ID)
-
-	return cloneJob(job)
-}
-
-// CreateClusterJob creates a cluster creation job and runs init.sh in the background
-func (m *Manager) CreateClusterJob(clusterID, clusterName string) models.Job {
-	now := time.Now().UTC()
-	job := &models.Job{
-		ID:       uuid.NewString(),
-		Type:     "cluster_creation",
-		Name:     "Cluster Creation: " + clusterName,
-		Status:   models.JobStatusQueued,
-		Progress: 0,
-		Stage:    "queued",
-		Message:  "Cluster creation job accepted",
-		Metadata: map[string]string{
-			"clusterId": clusterID,
-		},
+		ID:        uuid.NewString(),
+		Type:      "cluster_creation",
+		Name:      "Cluster Creation: " + clusterName,
+		Status:    models.JobStatusQueued,
+		Progress:  0,
+		Stage:     "queued",
+		Message:   "Cluster creation job accepted",
+		Metadata:  map[string]string{"clusterId": clusterID},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
-	m.mu.Lock()
-	m.jobs[job.ID] = job
-	m.mu.Unlock()
+	if err := m.db.Create(job).Error; err != nil {
+		return nil, err
+	}
 
 	go m.runClusterJob(job.ID, clusterID, clusterName)
 
-	return cloneJob(job)
+	return job, nil
 }
 
 // List returns all jobs in reverse chronological order.
-func (m *Manager) List() []models.Job {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	jobs := make([]models.Job, 0, len(m.jobs))
-	for _, job := range m.jobs {
-		jobs = append(jobs, cloneJob(job))
+func (m *Manager) List() ([]models.Job, error) {
+	var jobs []models.Job
+	if err := m.db.Order("created_at DESC").Find(&jobs).Error; err != nil {
+		return nil, err
 	}
-
-	sort.Slice(jobs, func(i, j int) bool {
-		return jobs[i].CreatedAt.After(jobs[j].CreatedAt)
-	})
-
-	return jobs
+	return jobs, nil
 }
 
 // Get retrieves a job by id.
-func (m *Manager) Get(id string) (models.Job, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	job, ok := m.jobs[id]
-	if !ok {
-		return models.Job{}, false
+func (m *Manager) Get(id string) (*models.Job, error) {
+	var job models.Job
+	if err := m.db.Where("id = ?", id).First(&job).Error; err != nil {
+		return nil, err
 	}
-
-	return cloneJob(job), true
+	return &job, nil
 }
 
-func (m *Manager) runDemoJob(id string) {
-	job, ok := m.Get(id)
-	if !ok {
-		return
-	}
-
-	durationSeconds := job.DurationSeconds
-	if durationSeconds <= 0 {
-		durationSeconds = defaultDemoDurationSeconds
-	}
-
-	_ = m.update(id, func(job *models.Job) {
+// runClusterJob executes the cluster provisioning steps, updating the job row
+// and the cluster row in the database at every stage.
+//
+// The steps below are SAMPLE placeholders (sleep) that simulate a long-running
+// provisioning process. Replace each step's command/args with your real
+// provisioning commands (e.g. incus launch, incus exec ...) as needed. The
+// final step is expected to print details like "IP: 10.0.0.5" / "Name: vm-1"
+// which are parsed into the job result and cluster record.
+func (m *Manager) runClusterJob(jobID, clusterID, clusterName string) {
+	m.updateJob(jobID, func(job *models.Job) {
 		job.Status = models.JobStatusRunning
-		job.Stage = "preparing"
-		job.Message = "Starting background work"
-		job.UpdatedAt = time.Now().UTC()
+		job.Stage = "initializing"
+		job.Progress = 5
+		job.Message = "Starting cluster provisioning..."
 	})
 
-	steps := 10
-	stepDuration := time.Duration(durationSeconds) * time.Second / time.Duration(steps)
-	if stepDuration < 250*time.Millisecond {
-		stepDuration = 250 * time.Millisecond
+	m.updateCluster(clusterID, map[string]interface{}{
+		"status":  string(models.ClusterStatusCreating),
+		"message": "Provisioning cluster",
+	})
+
+	// Sample provisioning steps. Replace with real commands later.
+	steps := []provisioningStep{
+		{stage: "creating", message: "Creating VM...", command: "sleep", args: []string{"3"}},
+		{stage: "configuring", message: "Configuring VM...", command: "sleep", args: []string{"3"}},
+		{stage: "fetching-details", message: "Fetching VM details...", command: "bash", args: []string{"-c", "sleep 2; echo 'IP: 192.168.1.100'; echo 'Name: " + clusterName + "'"}},
 	}
 
-	for step := 1; step <= steps; step++ {
-		time.Sleep(stepDuration)
+	var outputs []string
+	for i, step := range steps {
+		// Report the step before running it
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = step.stage
+			job.Progress = 10 + (i+1)*(90/len(steps))
+			job.Message = step.message
+		})
 
-		if !m.update(id, func(job *models.Job) {
-			job.Stage = "processing"
-			job.Progress = step * 100 / steps
-			job.Message = fmt.Sprintf("Processing step %d of %d", step, steps)
-			job.UpdatedAt = time.Now().UTC()
-		}) {
+		cmd := exec.Command(step.command, step.args...)
+		output, err := cmd.CombinedOutput()
+		outputs = append(outputs, string(output))
+
+		if err != nil {
+			m.failClusterJob(jobID, clusterID, outputs, err)
 			return
 		}
 	}
 
-	completedAt := time.Now().UTC()
-	_ = m.update(id, func(job *models.Job) {
-		job.Status = models.JobStatusSucceeded
-		job.Progress = 100
-		job.Stage = "complete"
-		job.Message = "Job finished successfully"
-		job.Result = map[string]any{
-			"summary":         "Demo job completed",
-			"durationSeconds": durationSeconds,
-			"steps":           steps,
-		}
-		job.CompletedAt = &completedAt
-		job.UpdatedAt = completedAt
-	})
-}
+	outputStr := strings.Join(outputs, "\n")
 
-func (m *Manager) runClusterJob(jobID, clusterID, clusterName string) {
-	_ = m.update(jobID, func(job *models.Job) {
-		job.Status = models.JobStatusRunning
-		job.Stage = "initializing"
-		job.Progress = 5
-		job.Message = "Starting cluster initialization..."
-		job.UpdatedAt = time.Now().UTC()
-	})
-
-	// Update cluster status in database
-	if m.db != nil {
-		m.db.Model(&models.Cluster{}).Where("id = ?", clusterID).Updates(map[string]interface{}{
-			"status":  string(models.ClusterStatusCreating),
-			"message": "Initializing cluster creation",
-		})
+	// Parse "key: value" lines from the combined output (e.g. IP, Name, ...).
+	details := extractDetails(outputStr)
+	ip := details["ip"]
+	if name := details["name"]; name != "" {
+		clusterName = name
 	}
-
-	// Find init.sh script
-	initScriptPath := "./init.sh"
-	if _, err := os.Stat(initScriptPath); err != nil {
-		// Try relative to the binary location
-		ex, _ := os.Executable()
-		initScriptPath = filepath.Join(filepath.Dir(ex), "..", "..", "init.sh")
-	}
-
-	// Execute init.sh with cluster name and VM name parameters
-	cmd := exec.Command("bash", initScriptPath, "--name", clusterName)
-
-	_ = m.update(jobID, func(job *models.Job) {
-		job.Progress = 10
-		job.Stage = "executing"
-		job.Message = fmt.Sprintf("Executing: %s", strings.Join(cmd.Args, " "))
-		job.UpdatedAt = time.Now().UTC()
-	})
-
-	// Run the command
-	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
-
-	if err != nil {
-		completedAt := time.Now().UTC()
-		_ = m.update(jobID, func(job *models.Job) {
-			job.Status = models.JobStatusFailed
-			job.Progress = 100
-			job.Stage = "failed"
-			job.Message = "Cluster creation failed"
-			job.Error = err.Error()
-			job.Result = map[string]any{
-				"output": outputStr,
-				"error":  err.Error(),
-			}
-			job.CompletedAt = &completedAt
-			job.UpdatedAt = completedAt
-		})
-
-		// Update cluster status to failed
-		if m.db != nil {
-			m.db.Model(&models.Cluster{}).Where("id = ?", clusterID).Updates(map[string]interface{}{
-				"status":  string(models.ClusterStatusFailed),
-				"message": "Cluster creation failed: " + err.Error(),
-			})
-		}
-		return
-	}
-
-	// Extract IP from output if available
-	ip := extractIP(outputStr)
 
 	completedAt := time.Now().UTC()
-	_ = m.update(jobID, func(job *models.Job) {
+	m.updateJob(jobID, func(job *models.Job) {
 		job.Status = models.JobStatusSucceeded
 		job.Progress = 100
 		job.Stage = "complete"
 		job.Message = "Cluster created successfully"
 		job.Result = map[string]any{
-			"output": outputStr,
-			"ip":     ip,
+			"name":    clusterName,
+			"ip":      ip,
+			"details": details,
+			"output":  outputStr,
 		}
 		job.CompletedAt = &completedAt
-		job.UpdatedAt = completedAt
 	})
 
-	// Update cluster status to ready
-	if m.db != nil {
-		m.db.Model(&models.Cluster{}).Where("id = ?", clusterID).Updates(map[string]interface{}{
-			"status":  string(models.ClusterStatusReady),
-			"ip":      ip,
-			"message": "Cluster is ready",
-		})
-	}
+	m.updateCluster(clusterID, map[string]interface{}{
+		"status":  string(models.ClusterStatusReady),
+		"ip":      ip,
+		"message": "Cluster is ready",
+	})
 }
 
-// extractIP extracts the master IP from init.sh output
-func extractIP(output string) string {
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "Master IP:") {
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				return parts[2]
-			}
+// failClusterJob marks the job and cluster as failed.
+func (m *Manager) failClusterJob(jobID, clusterID string, outputs []string, runErr error) {
+	outputStr := strings.Join(outputs, "\n")
+	completedAt := time.Now().UTC()
+
+	m.updateJob(jobID, func(job *models.Job) {
+		job.Status = models.JobStatusFailed
+		job.Progress = 100
+		job.Stage = "failed"
+		job.Message = "Cluster provisioning failed"
+		job.Error = runErr.Error()
+		job.Result = map[string]any{
+			"output": outputStr,
+			"error":  runErr.Error(),
 		}
-	}
-	return ""
+		job.CompletedAt = &completedAt
+	})
+
+	m.updateCluster(clusterID, map[string]interface{}{
+		"status":  string(models.ClusterStatusFailed),
+		"message": "Cluster provisioning failed: " + runErr.Error(),
+	})
 }
 
-func (m *Manager) update(id string, mutate func(*models.Job)) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	job, ok := m.jobs[id]
-	if !ok {
-		return false
+// updateJob loads a job, applies the mutation, and persists the row.
+func (m *Manager) updateJob(id string, mutate func(*models.Job)) {
+	var job models.Job
+	if err := m.db.Where("id = ?", id).First(&job).Error; err != nil {
+		return
 	}
 
-	mutate(job)
-	return true
+	mutate(&job)
+	job.UpdatedAt = time.Now().UTC()
+	m.db.Save(&job)
 }
 
-func cloneJob(job *models.Job) models.Job {
-	if job == nil {
-		return models.Job{}
-	}
+// updateCluster applies partial updates to a cluster row.
+func (m *Manager) updateCluster(clusterID string, updates map[string]interface{}) {
+	m.db.Model(&models.Cluster{}).Where("id = ?", clusterID).Updates(updates)
+}
 
-	clone := *job
-	if job.Metadata != nil {
-		clone.Metadata = make(map[string]string, len(job.Metadata))
-		for key, value := range job.Metadata {
-			clone.Metadata[key] = value
+// provisioningStep describes a single command run during cluster provisioning.
+// Replace the sample sleep commands with your real provisioning commands.
+type provisioningStep struct {
+	stage   string // job stage reported to the UI
+	message string // human-readable progress message
+	command string // executable to run
+	args    []string
+}
+
+// extractDetails parses "Key: Value" lines from command output into a map.
+// Keys are lowercased for case-insensitive lookups (e.g. "IP:" -> "ip").
+func extractDetails(output string) map[string]string {
+	details := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if key != "" && value != "" {
+			details[key] = value
 		}
 	}
-	if job.Result != nil {
-		clone.Result = make(map[string]any, len(job.Result))
-		for key, value := range job.Result {
-			clone.Result[key] = value
-		}
-	}
-
-	return clone
+	return details
 }

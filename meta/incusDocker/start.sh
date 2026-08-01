@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# Trap SIGTERM so we can shut down incusd and lxcfs gracefully
+trap "cleanup; exit" SIGTERM
+
+cleanup() {
+    echo "Stopping incusd..."
+    incus admin shutdown
+    pkill -TERM incusd
+    echo "Stopped incusd."
+    
+    echo "Stopping lxcfs..."
+    pkill -TERM lxcfs
+    fusermount -u /var/lib/incus-lxcfs
+    echo "Stopped lxcfs."
+    
+    CHILD_PIDS=$(pgrep -P $$)
+    if [ -n "$CHILD_PIDS" ]; then
+        pkill -TERM -P $$
+        echo "Stopped child processes with PIDs: $CHILD_PIDS"
+    else
+        echo "No child processes found."
+    fi
+}
+
+# Map KVM GID if provided as an Environment Variable
+if [ -n "$KVM_GID" ]; then
+    echo "Updating container kvm group to GID $KVM_GID to match host..."
+    groupmod -g "$KVM_GID" kvm || true
+fi
+
+# Environment Exports
+export PATH="/opt/incus/bin/:${PATH}"
+export INCUS_EDK2_PATH="/opt/incus/share/qemu/"
+export LD_LIBRARY_PATH="/opt/incus/lib/"
+export INCUS_LXC_TEMPLATE_CONFIG="/opt/incus/share/lxc/config/"
+export INCUS_DOCUMENTATION="/opt/incus/doc/"
+export INCUS_LXC_HOOK="/opt/incus/share/lxc/hooks/"
+export INCUS_AGENT_PATH="/opt/incus/agent/"
+export INCUS_UI="/opt/incus/ui/"
+
+# Iptables handling
+if [ "$SETIPTABLES" = "true" ]; then
+    if ! iptables-legacy -C DOCKER-USER -j ACCEPT &>/dev/null; then
+        iptables-legacy -I DOCKER-USER -j ACCEPT
+    fi
+    if ! ip6tables-legacy -C DOCKER-USER -j ACCEPT &>/dev/null; then
+        ip6tables-legacy -I DOCKER-USER -j ACCEPT
+    fi
+    if ! iptables -C DOCKER-USER -j ACCEPT &>/dev/null; then
+        iptables -I DOCKER-USER -j ACCEPT
+    fi
+    if ! ip6tables -C DOCKER-USER -j ACCEPT &>/dev/null; then
+        ip6tables -I DOCKER-USER -j ACCEPT
+    fi
+fi
+
+# Start services
+mkdir -p /var/lib/incus-lxcfs
+/opt/incus/bin/lxcfs /var/lib/incus-lxcfs --enable-loadavg --enable-cfs &
+/usr/lib/systemd/systemd-udevd &
+UDEVD_PID=$!
+/opt/incus/bin/incusd &
+
+# Wait for incusd to become ready before running the preseed
+echo "Waiting for incusd to become ready..."
+for i in $(seq 1 60); do
+    if [ -S /var/lib/incus/unix.socket ]; then
+        break
+    fi
+    sleep 1
+done
+
+# Complete the initial setup via preseed (only once).
+# The marker file lives in /var/lib/incus so, with a persistent volume,
+# it survives container restarts and recreates.
+INIT_MARKER="/var/lib/incus/.preseed-done"
+if [ -f "$INIT_MARKER" ]; then
+    echo "Incus already initialized — skipping preseed."
+else
+    echo "Running incus admin init --preseed to complete setup..."
+    if incus admin init --preseed < /incus-preseed.yaml; then
+        touch "$INIT_MARKER"
+        echo "Preseed completed successfully."
+        
+        # Import the prebuilt k8s VM image (baked into the image at /incus-images)
+        if [ -f /incus-images/incus.tar.xz ] && [ -f /incus-images/disk.qcow2 ]; then
+            echo "Importing k8s VM image (alias 'k8s')..."
+            if incus image import /incus-images/incus.tar.xz /incus-images/disk.qcow2 --alias k8s; then
+                echo "Imported VM image with alias 'k8s'."
+            else
+                echo "WARNING: Failed to import VM image. You can import it manually:"
+                echo "  incus image import /incus-images/incus.tar.xz /incus-images/disk.qcow2 --alias k8s"
+            fi
+        else
+            echo "VM image files not found in image — skipping import."
+        fi
+    else
+        echo "Preseed failed — will retry on next start."
+    fi
+fi
+
+# Keep the container alive
+sleep infinity

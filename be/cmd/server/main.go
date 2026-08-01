@@ -5,7 +5,6 @@ import (
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/config"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
-	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/routes"
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/driver/postgres"
@@ -27,7 +26,7 @@ func main() {
 		AppName: "Incus K8s Manager API",
 	})
 
-	jobManager := jobs.NewManagerWithDB(db)
+	jobManager := jobs.NewManager(db)
 
 	// Setup all routes
 	routes.SetupRoutes(app, jobManager, db)
@@ -49,13 +48,7 @@ func initDatabase(cfg *config.Config) (*gorm.DB, error) {
 
 	log.Println("Connected to database successfully")
 
-	// Auto-migrate models
-	err = db.AutoMigrate(&models.Cluster{})
-	if err != nil {
-		return nil, err
-	}
-
-	log.Println("Database migration completed")
-
+	// Schema is managed by golang-migrate CLI (db/migrations).
+	// Apply pending migrations with: make migrate-up
 	return db, nil
 }

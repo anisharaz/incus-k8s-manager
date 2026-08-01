@@ -1,8 +1,9 @@
-.PHONY: build run dev test clean fmt lint help
+.PHONY: build run dev test clean fmt lint help migrate-up migrate-down migrate-create
 
 # Variables
 BINARY_NAME=incus-k8s-manager
 MAIN_PATH=./cmd/server/main.go
+MIGRATE_PATH=db/migrations
 
 help:
 	@echo "Available commands:"
@@ -14,6 +15,9 @@ help:
 	@echo "  make lint        - Run linter"
 	@echo "  make clean       - Clean build artifacts"
 	@echo "  make deps        - Download dependencies"
+	@echo "  make migrate-up  - Apply all pending migrations (requires DATABASE_URL)"
+	@echo "  make migrate-down - Roll back the last migration (requires DATABASE_URL)"
+	@echo "  make migrate-create NAME=create_xyz - Create a new migration pair"
 
 build:
 	@echo "Building..."
@@ -50,3 +54,17 @@ deps:
 	go mod download
 	go mod tidy
 	@echo "Dependencies updated"
+
+migrate-up:
+	@test -n "$${DATABASE_URL}" || (echo "DATABASE_URL is required (e.g. postgres://user:pass@localhost:5432/dbname?sslmode=disable)"; exit 1)
+	@echo "Applying migrations..."
+	migrate -path $(MIGRATE_PATH) -database "$${DATABASE_URL}" up
+
+migrate-down:
+	@test -n "$${DATABASE_URL}" || (echo "DATABASE_URL is required (e.g. postgres://user:pass@localhost:5432/dbname?sslmode=disable)"; exit 1)
+	@echo "Rolling back the last migration..."
+	migrate -path $(MIGRATE_PATH) -database "$${DATABASE_URL}" down 1
+
+migrate-create:
+	@test -n "$(NAME)" || (echo "Usage: make migrate-create NAME=create_something"; exit 1)
+	migrate create -ext sql -dir $(MIGRATE_PATH) -seq $(NAME)

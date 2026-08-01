@@ -1,0 +1,40 @@
+config:
+  # Listen on all interfaces (HTTPS on port 8443)
+  core.https_address: ":8443"
+
+  # Keep downloaded images up to date
+  images.auto_update_interval: "6"
+
+storage_pools:
+  - name: default
+    driver: dir
+
+networks:
+  - name: clustermanagerbr0
+    type: bridge
+    config:
+      ipv4.address: auto
+      ipv4.nat: "true"
+      ipv6.address: auto
+      ipv6.nat: "true"
+
+profiles:
+  - name: default
+    description: Default Incus profile
+    config: {}
+    devices:
+      eth0:
+        type: nic
+        network: clustermanagerbr0
+        name: eth0
+
+      root:
+        type: disk
+        pool: default
+        path: /
+
+projects:
+  - name: default
+    description: Default project
+
+cluster: null
