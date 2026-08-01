@@ -1,30 +1,3 @@
-# docker-compose.yml — Run the KII (Incus) container from Docker Hub.
-#
-# The container always runs in the HOST network namespace so Incus can
-# manage host bridges / iptables directly. This mirrors the options that
-# run.sh builds:
-#
-#   docker run -d --name incus --privileged --restart unless-stopped \
-#     --network host \
-#     -e SETIPTABLES=true -e KVM_GID=<gid> \
-#     -v incus-data:/var/lib/incus \
-#     -v /dev:/dev -v /lib/modules:/lib/modules:ro \
-#     anisharaz/kii:latest
-#
-# The Incus API listens on port 8443 directly on the host.
-#
-# The "incus-data" named volume persists /var/lib/incus across container
-# restarts/recreates. This keeps the preseed state marker (and all Incus
-# data: pools, config, instances), so start.sh only runs
-# "incus admin init --preseed" on the very first start.
-#
-# Usage:
-#   export KVM_GID=$(getent group kvm | cut -d: -f3)   # optional, for VMs
-#   docker compose up -d                                # start
-#   docker compose ps                                   # wait for "healthy"
-#   docker compose logs -f incus                        # follow logs
-#   docker compose down                                 # stop & remove
-
 services:
   incus:
     image: anisharaz/kii:latest
@@ -38,9 +11,6 @@ services:
       # traffic isn't dropped. Override with: export SETIPTABLES=false
       SETIPTABLES: "${SETIPTABLES:-true}"
 
-      # Host's kvm group GID, used to remap the container kvm group so
-      # VMs get the right /dev/kvm permissions. Leave unset to skip.
-      #   export KVM_GID=$(getent group kvm | cut -d: -f3)
       KVM_GID: "${KVM_GID:-}"
 
     volumes:
@@ -48,6 +18,21 @@ services:
       - incus-data:/var/lib/incus
       - /dev:/dev
       - /lib/modules:/lib/modules:ro
+      # Shared socket volume: start.sh proxies /var/lib/incus/unix.socket
+      # to /shared-socket/incus.sock so other containers can drive the API.
+      - incus-socket-share:/shared-socket
+
+  app:
+    image: ubuntu:24.04
+    container_name: app
+    restart: unless-stopped
+    depends_on:
+      - incus
+    volumes:
+      - incus-socket-share:/shared-socket:ro
+    stdin_open: true
+    tty: true
 
 volumes:
   incus-data:
+  incus-socket-share:

@@ -71,6 +71,15 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
+# Share the Incus API socket with sibling containers via a shared volume.
+# Proxied through socat so the daemon sees root peer credentials and the
+# incus-admin/root authorization check passes for any client.
+if [ -d /shared-socket ]; then
+    echo "Starting socket proxy at /shared-socket/incus.sock..."
+    socat UNIX-LISTEN:/shared-socket/incus.sock,fork,unlink-early,reuseaddr \
+          UNIX-CONNECT:/var/lib/incus/unix.socket &
+fi
+
 # Complete the initial setup via preseed (only once).
 # The marker file lives in /var/lib/incus so, with a persistent volume,
 # it survives container restarts and recreates.

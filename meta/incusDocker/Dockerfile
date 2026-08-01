@@ -15,7 +15,7 @@ RUN echo "#!/bin/bash" > /sbin/systemctl && \
     # Install incus and dependencies
     # Added 'passwd' to ensure groupmod is available for GID mapping
     apt-get update && \
-    apt-get install --no-install-recommends -y fuse nftables ebtables arptables iproute2 thin-provisioning-tools openvswitch-switch btrfs-progs lvm2 udev iptables kmod passwd && \
+    apt-get install --no-install-recommends -y fuse nftables ebtables arptables iproute2 thin-provisioning-tools openvswitch-switch btrfs-progs lvm2 udev iptables kmod passwd socat && \
     apt-get install --no-install-recommends --no-install-suggests -y zfsutils-linux && \
     apt-get install --no-install-recommends -y incus incus-ui-canonical && \
     apt-get remove -y curl && \
@@ -24,7 +24,7 @@ RUN echo "#!/bin/bash" > /sbin/systemctl && \
 
 # Copy the start script and preseed config into the image
 COPY start.sh /start.sh
-COPY incus-preseed.yaml /incus-preseed.yaml
+COPY ./incusStuff/incus-preseed.yaml /incus-preseed.yaml
 RUN chmod +x /start.sh
 
 # Bake the prebuilt k8s VM image into the image so start.sh can import
