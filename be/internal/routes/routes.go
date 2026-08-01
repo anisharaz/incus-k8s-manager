@@ -34,7 +34,6 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Post("/users", userHandlers.CreateUser)
 	v1.Get("/users", userHandlers.ListUsers)
 	v1.Get("/users/:id", userHandlers.GetUser)
-	v1.Delete("/users/:id", userHandlers.DeleteUser)
 
 	// Cluster network routes
 	v1.Post("/networks", networkHandlers.CreateNetwork)

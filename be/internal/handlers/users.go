@@ -101,34 +101,3 @@ func (h *UserHandlers) GetUser(c fiber.Ctx) error {
 
 	return c.JSON(models.UserResponse{User: user})
 }
-
-// DeleteUser deletes a user. Cascades to their cluster networks, clusters,
-// and nodes at the database level (see migrations) — this does NOT clean
-// up the corresponding Incus resources, so delete those first.
-func (h *UserHandlers) DeleteUser(c fiber.Ctx) error {
-	var user models.User
-	if err := h.db.Where("id = ?", c.Params("id")).First(&user).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
-				Error:   "not found",
-				Message: "user not found",
-				Code:    fiber.StatusNotFound,
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
-			Error:   "database error",
-			Message: err.Error(),
-			Code:    fiber.StatusInternalServerError,
-		})
-	}
-
-	if err := h.db.Delete(&user).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
-			Error:   "database error",
-			Message: err.Error(),
-			Code:    fiber.StatusInternalServerError,
-		})
-	}
-
-	return c.SendStatus(fiber.StatusNoContent)
-}
