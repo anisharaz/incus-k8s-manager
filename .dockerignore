@@ -1,0 +1,7 @@
+.git
+**/node_modules
+fe/dist
+be/bin
+be/tmp
+meta/incusDocker/incusStuff/*.tar.xz
+meta/incusDocker/incusStuff/*.qcow2

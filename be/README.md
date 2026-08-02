@@ -52,9 +52,8 @@ be/
 
 - Go 1.26 or higher
 - PostgreSQL
-- `migrate` CLI (golang-migrate) for database migrations
-- Incus CLI installed (for status checks)
 - Access to an Incus daemon's unix socket (`INCUS_SOCKET_PATH`, see `meta/incusDocker/`)
+- (optional) `migrate` CLI (golang-migrate), for manual migration control — the app applies migrations itself on startup
 
 ## Setup
 
@@ -64,26 +63,13 @@ be/
    make deps
    ```
 
-2. **Install the migrate CLI (if not already installed):**
-
-   ```bash
-   go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-   ```
-
-3. **Create environment file:**
+2. **Create environment file:**
 
    ```bash
    cp .env.example .env
    ```
 
-4. **Apply database migrations:**
-
-   ```bash
-   export DATABASE_URL="postgres://postgres:postgres@localhost:5432/incus_k8s_manager?sslmode=disable"
-   make migrate-up
-   ```
-
-5. **Run in development mode (with hot reload):**
+3. **Run in development mode (with hot reload):**
 
    ```bash
    make dev
@@ -94,6 +80,18 @@ be/
    ```bash
    make run
    ```
+
+The app applies any pending database migrations itself on every startup
+(`db/migrations` is embedded into the binary — see `cmd/server/main.go`'s
+`runMigrations`), so there's no separate migration step. The standalone
+`migrate` CLI is still useful for manual control (rolling back a migration,
+inspecting schema state):
+
+```bash
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/incus_k8s_manager?sslmode=disable"
+make migrate-down   # roll back the last migration
+```
 
 ## API Endpoints
 
@@ -270,7 +268,7 @@ Environment variables can be set via `.env` file or system environment:
 
 - The API is configured to allow requests from `localhost:5173` and `localhost:8000`, with credentials (cookies) enabled
 - Modify CORS settings in `internal/middleware/cors.go` as needed
-- Incus status checks require the Incus CLI to be installed and accessible
+- `/api/v1/status` checks Incus reachability via the SDK over the shared socket (`internal/incus.Client.List`) — no `incus` CLI binary needed
 
 ## Future Enhancements
 

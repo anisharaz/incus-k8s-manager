@@ -1,18 +1,23 @@
 package routes
 
 import (
+	"io/fs"
+
 	"github.com/anisharaz/incus-k8s-manager/be/internal/config"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/handlers"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/webui"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/static"
 	"gorm.io/gorm"
 )
 
 // SetupRoutes initializes all application routes
 func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusClient *incus.Client, cfg *config.Config) {
 	taskHandlers := handlers.NewTaskHandlers(jobManager)
+	statusHandlers := handlers.NewStatusHandlers(incusClient)
 	networkHandlers := handlers.NewNetworkHandlers(db, incusClient)
 	userHandlers := handlers.NewUserHandlers(db)
 	clusterHandlers := handlers.NewClusterHandlers(db, jobManager)
@@ -31,7 +36,7 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1 := app.Group("/api/v1")
 
 	// Status routes
-	v1.Get("/status", handlers.StatusHandler)
+	v1.Get("/status", statusHandlers.Status)
 	v1.Get("/jobs", requireAuth, taskHandlers.ListJobs)
 	v1.Get("/jobs/:id", requireAuth, taskHandlers.GetJob)
 
@@ -74,11 +79,26 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 		})
 	})
 
-	// 404 handler
-	app.Use(func(c fiber.Ctx) error {
+	// JSON 404 for anything under /api that didn't match a specific route.
+	app.Use("/api", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Route not found",
 			"path":  c.Path(),
 		})
 	})
+
+	// Serve the built frontend for everything else. A path that isn't a
+	// real static file (e.g. a client-side route like /clusters/:id) falls
+	// back to index.html so the SPA's own router handles it.
+	app.Use(static.New("", static.Config{
+		FS: webui.FS,
+		NotFoundHandler: func(c fiber.Ctx) error {
+			index, err := fs.ReadFile(webui.FS, "index.html")
+			if err != nil {
+				return c.Status(fiber.StatusNotFound).SendString("not found")
+			}
+			c.Type("html")
+			return c.Status(fiber.StatusOK).Send(index)
+		},
+	}))
 }

@@ -1,6 +1,6 @@
 services:
   incus:
-    image: anisharaz/kii:latest
+    image: anisharaz/kiivmrunner:latest
     container_name: incus
     privileged: true
     restart: unless-stopped
@@ -22,17 +22,48 @@ services:
       # to /shared-socket/incus.sock so other containers can drive the API.
       - incus-socket-share:/shared-socket
 
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: "${POSTGRES_DB:-incus_k8s_manager}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   app:
-    image: ubuntu:24.04
+    image: anisharaz/kiiapp:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
     container_name: app
     restart: unless-stopped
     depends_on:
-      - incus
+      incus:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8000"
+      ENV: "${ENV:-production}"
+      # Migrations run automatically on startup (see be/cmd/server/main.go's
+      # runMigrations) — no separate migrate step needed.
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-incus_k8s_manager}?sslmode=disable"
+      INCUS_SOCKET_PATH: /shared-socket/incus.sock
+      JWT_SECRET: "${JWT_SECRET:-}"
+    ports:
+      - "8000:8000"
     volumes:
       - incus-socket-share:/shared-socket:ro
-    stdin_open: true
-    tty: true
 
 volumes:
   incus-data:
   incus-socket-share:
+  postgres-data:

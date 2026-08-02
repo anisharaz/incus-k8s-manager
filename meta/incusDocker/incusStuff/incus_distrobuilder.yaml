@@ -155,6 +155,38 @@ actions:
       #!/bin/sh
       set -eux
 
+      # Pre-pull the control-plane images kubeadm needs (apiserver,
+      # controller-manager, scheduler, proxy, pause, etcd, coredns) for the
+      # pinned Kubernetes version, so `kubeadm init`/`kubeadm join` never
+      # pulls them over the network at cluster-creation time. Runs before
+      # the /etc/resolv.conf rewrite further down (which points at the
+      # booted VM's systemd-resolved stub — not usable inside this chroot),
+      # so DNS still works here. Uses a throwaway containerd config so this
+      # doesn't depend on /etc/containerd/config.toml existing yet, but its
+      # default root/state dirs (/var/lib/containerd, /run/containerd) are
+      # the same ones the real system uses, so the pulled images land in
+      # the final image.
+      containerd config default > /tmp/containerd-image-prepull.toml
+      containerd --config /tmp/containerd-image-prepull.toml &
+      CONTAINERD_PID=$!
+
+      for i in $(seq 1 30); do
+        [ -S /run/containerd/containerd.sock ] && break
+        sleep 1
+      done
+      [ -S /run/containerd/containerd.sock ]
+
+      kubeadm config images pull
+
+      kill "$CONTAINERD_PID"
+      wait "$CONTAINERD_PID" 2>/dev/null || true
+      rm -rf /run/containerd /tmp/containerd-image-prepull.toml
+
+  - trigger: post-packages
+    action: |-
+      #!/bin/sh
+      set -eux
+
       [ ! -d /run/systemd ] && exit 0
       chattr -i /run/systemd
 

@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"log"
+	"net/url"
 	"os"
 )
 
@@ -63,13 +64,22 @@ func loadJWTSecret() []byte {
 	return secret
 }
 
-// GetDatabaseDSN returns the PostgreSQL connection string
+// GetDatabaseDSN returns the PostgreSQL connection string, always as a
+// "postgres://" URL — both GORM's postgres driver and golang-migrate's
+// (used by runMigrations in cmd/server/main.go) require that format.
 func (c *Config) GetDatabaseDSN() string {
 	if c.DBUrl != "" {
 		return c.DBUrl
 	}
-	// Format: user=<user> password=<pass> host=<host> port=<port> dbname=<dbname> sslmode=disable
-	return "user=" + c.DBUser + " password=" + c.DBPass + " host=" + c.DBHost + " port=" + c.DBPort + " dbname=" + c.DBName + " sslmode=disable"
+
+	dsn := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.DBUser, c.DBPass),
+		Host:     c.DBHost + ":" + c.DBPort,
+		Path:     "/" + c.DBName,
+		RawQuery: "sslmode=disable",
+	}
+	return dsn.String()
 }
 
 // getEnv retrieves environment variable or returns a default value

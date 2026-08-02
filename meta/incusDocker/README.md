@@ -84,25 +84,28 @@ CLI options:
 
 ## Docker Compose
 
-A `docker-compose.yml` is included that mirrors the `docker run` options above. It always uses the **host** network namespace (`network_mode: host`). Environment variables are configured in a `.env` file that `docker compose` auto-loads from this directory.
+`docker-compose.yml` brings up the full stack: the `incus` daemon (mirrors the `docker run` options above, always on the **host** network namespace), a `postgres` database, and `app` — the backend itself, built from `../../be/Dockerfile`. `app` waits on `postgres`'s healthcheck before starting, and applies any pending database migrations itself on every startup (see `be/cmd/server/main.go`'s `runMigrations`) — there's no separate migration step to run. Environment variables are configured in a `.env` file that `docker compose` auto-loads from this directory.
 
 First, check and adjust `KVM_GID` in `.env` for **your** host (see below), then:
 
 ```bash
 cd meta/incusDocker
 
-# Start
-docker compose up -d
+# Start (--build picks up any be/ source changes)
+docker compose up -d --build
 
-# Wait until the container reports "healthy"
+# Wait until incus reports "healthy" and postgres/app are "running"
 docker compose ps
 
 # Logs
 docker compose logs -f incus
+docker compose logs -f app
 
 # Stop & remove
 docker compose down
 ```
+
+The API is then reachable at `http://localhost:8000` (e.g. `curl localhost:8000/api/v1/auth/status`).
 
 ### Environment via `.env`
 
@@ -111,9 +114,17 @@ The `.env` file contains:
 ```bash
 KVM_GID=990        # host's kvm group GID (for VM support)
 SETIPTABLES=true   # add ACCEPT rules to DOCKER-USER iptables chains
+
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=incus_k8s_manager
+# JWT_SECRET=       # set this for any deployment that should survive a restart
+                     # without invalidating sessions — see be/README.md
 ```
 
 `docker compose` reads `.env` automatically, so a plain `docker compose up -d` is all you need. To change a value, edit `.env` and run `docker compose up -d` again (Compose recreates the container with the new env).
+
+> The compose file also defines a named volume `postgres-data` mounted at `/var/lib/postgresql/data`, so the database survives `docker compose down`/`up` (use `docker compose down -v` to also wipe it).
 
 > The Incus API listens on port **8443** directly on the host (no `-p` port mapping is needed with host networking).
 

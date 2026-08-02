@@ -1,8 +1,7 @@
 package handlers
 
 import (
-	"os/exec"
-
+	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/gofiber/fiber/v3"
 )
@@ -15,30 +14,28 @@ func HealthHandler(c fiber.Ctx) error {
 	})
 }
 
-// StatusHandler handles the status endpoint
-func StatusHandler(c fiber.Ctx) error {
-	incusStatus := getIncusStatus()
-	response := models.StatusResponse{
+// StatusHandlers handles the status endpoint.
+type StatusHandlers struct {
+	incus *incus.Client
+}
+
+// NewStatusHandlers creates a new status handler.
+func NewStatusHandlers(incusClient *incus.Client) *StatusHandlers {
+	return &StatusHandlers{incus: incusClient}
+}
+
+// Status reports whether the Incus daemon is reachable over the shared
+// socket, via a live SDK call — not the incus CLI binary, which isn't
+// installed in the app's container image.
+func (h *StatusHandlers) Status(c fiber.Ctx) error {
+	incusStatus := "running"
+	if _, err := h.incus.List(); err != nil {
+		incusStatus = "unreachable"
+	}
+
+	return c.JSON(models.StatusResponse{
 		Status: map[string]string{
 			"incus": incusStatus,
 		},
-	}
-	return c.JSON(response)
-}
-
-// getIncusStatus checks the status of Incus service
-func getIncusStatus() string {
-	cmd := exec.Command("incus", "version")
-	err := cmd.Run()
-	if err != nil {
-		return "not found"
-	}
-
-	cmd = exec.Command("incus", "list")
-	err = cmd.Run()
-	if err != nil {
-		return "stopped"
-	}
-
-	return "running"
+	})
 }
