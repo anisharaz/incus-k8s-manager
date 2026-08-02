@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS jobs (
     id           TEXT PRIMARY KEY,
+    owner_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     type         TEXT NOT NULL,
     name         TEXT,
     status       VARCHAR(20) NOT NULL DEFAULT 'queued',
@@ -16,3 +17,4 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs (type);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+CREATE INDEX IF NOT EXISTS idx_jobs_owner_id ON jobs (owner_id);

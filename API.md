@@ -7,11 +7,13 @@ frontend (`fe/`) codes against.
 - **Format:** all requests/responses are JSON (`Content-Type: application/json`)
 - **Auth:** cookie-based session (see [Authentication](#authentication)
   below). The app has exactly one **admin** (created once via a bootstrap
-  flow) and any number of regular **users** (created by the admin). Cluster
-  networks/clusters/nodes are still tied to a `User` via `ownerId` purely
-  for ownership bookkeeping — creating those resources doesn't yet check
-  that the caller *is* that owner (see Known gaps), but creating other
-  *users* now genuinely requires an authenticated admin session.
+  flow) and any number of regular **users** (created by the admin).
+  **Every** Cluster Network / Cluster / Node / Job endpoint requires a
+  session and is scoped to the caller — you only ever see and can only ever
+  act on resources you own, admin included (the admin's only special power
+  is managing the Users list; it has no cross-user visibility into anyone
+  else's clusters). There is no `ownerId` field in any request body
+  anymore — the owner is always the logged-in user, never client-supplied.
 - **CORS (dev):** `http://localhost:5173`, `http://localhost:8000`,
   `http://localhost:3000` are allowed, with credentials
   (`be/internal/middleware/cors.go`) — required for the session cookie to
@@ -86,7 +88,7 @@ Status codes used throughout the API:
 | `403` | Logged in, but the account's role isn't allowed to do this (currently: non-admin hitting a `/users` endpoint) |
 | `404` | Resource not found |
 | `409` | Conflict — duplicate name, CIDR overlap, or an operation attempted in the wrong state (e.g. adding a worker before the master is ready) |
-| `500` | Server/database/Incus error. **Known gap:** an invalid `ownerId` or `networkId` that doesn't reference a real row currently surfaces here as a raw Postgres foreign-key-violation message, not a clean `400`/`404`. Validate that IDs came from a real prior API response before submitting. |
+| `500` | Server/database/Incus error |
 
 ### The async job pattern (important for the UI)
 
@@ -145,6 +147,9 @@ User
   healthy). Worker outcomes don't change cluster status.
 - Deleting a `ClusterNetwork` is blocked (`500`, underlying FK violation)
   while any `Cluster` references it.
+- Every `ClusterNetwork`, `Cluster`, and `Job` carries an `ownerId` and is
+  scoped to it on every read/write. A `Node` has no `ownerId` of its own —
+  it inherits scoping from its parent `Cluster`.
 
 ### Enums
 
@@ -267,8 +272,6 @@ log in again).
 Admin-only — every endpoint below requires an authenticated **admin**
 session (`401` if not logged in at all, `403` if logged in as a regular
 user). Regular users don't self-register; the admin creates them here.
-`ownerId` on Cluster Networks/Clusters must be a real user's `id` (any
-role).
 
 ### User shape
 
@@ -311,19 +314,20 @@ only ever comes from `/auth/register-admin`).
 ## Cluster Networks
 
 An Incus bridge network that cluster VMs are later launched onto. Must be
-created before a cluster can be created.
+created before a cluster can be created. **Every endpoint below requires a
+session and is scoped to the caller** — `401` if not logged in.
 
 ### `POST /api/v1/networks`
 
 Validates the CIDR against **every** network Incus currently knows about
 (not just ones created through this API — including the appliance's own
 bridge) to prevent an overlapping subnet, then creates the Incus bridge
-synchronously (this one's `201`, not `202` — no job/polling needed).
+synchronously (this one's `201`, not `202` — no job/polling needed). Owned
+by the logged-in user.
 
 **Request:**
 ```json
 {
-  "ownerId": "2b9dc998-2c29-4aef-90af-58a938a3d013",
   "name": "prod-net",
   "cidr": "10.10.0.0/24"
 }
@@ -353,29 +357,31 @@ synchronously (this one's `201`, not `202` — no job/polling needed).
 }
 ```
 
-`gateway` is auto-derived as the first usable address in the CIDR (network
-address + 1) — not user-supplied.
+`ownerId` is always the logged-in user's id — informational, not something
+you send. `gateway` is auto-derived as the first usable address in the
+CIDR (network address + 1) — also not user-supplied.
 
 **Errors:**
-- `400` — missing `ownerId`, bad `name` length, malformed/out-of-range `cidr`
-- `409` `"network already exists"` — this owner already has a network with that `name`
+- `401` — not logged in
+- `400` — bad `name` length, malformed/out-of-range `cidr`
+- `409` `"network already exists"` — **you** already have a network with that `name` (a different user having the same name is fine)
 - `409` `"cidr conflict"` — overlaps an existing Incus network; `message` names which one and its CIDR
-- `500` — bad `ownerId` (FK violation, see Conventions), or an Incus-side error
+- `500` — an Incus-side error
 
 ### `GET /api/v1/networks`
 
-**Response `200`:** `{ "networks": [ ClusterNetwork, ... ] }` (newest first, **all owners** — there's no `?ownerId=` filter yet, filter client-side if needed)
+**Response `200`:** `{ "networks": [ ClusterNetwork, ... ] }` — only the caller's own networks, newest first.
 
 ### `GET /api/v1/networks/:id`
 
-**Response `200`:** `{ "network": ClusterNetwork }` · **`404`** if not found.
+**Response `200`:** `{ "network": ClusterNetwork }` · **`404`** if not found *or* owned by someone else — the two look identical, by design (no existence leak).
 
 ### `DELETE /api/v1/networks/:id`
 
 Deletes from both Incus and the database. **`204`** on success.
 
-**Errors:** `404` not found · `500` if Incus refuses (e.g. still referenced
-by a `Cluster` — message will mention it's in use).
+**Errors:** `404` not found/not yours · `500` if Incus refuses (e.g. still
+referenced by a `Cluster` — message will mention it's in use).
 
 ---
 
@@ -383,14 +389,18 @@ by a `Cluster` — message will mention it's in use).
 
 Creating a cluster creates its **master node** and launches that node's VM
 as a background job (see "The async job pattern" above) — **poll before
-assuming the cluster is usable.**
+assuming the cluster is usable.** **Every endpoint below requires a session
+and is scoped to the caller** — `401` if not logged in.
 
 ### `POST /api/v1/clusters`
+
+Owned by the logged-in user, who must also own `networkId` — building a
+cluster on someone else's network isn't possible even if you somehow know
+its id (see Errors).
 
 **Request:**
 ```json
 {
-  "ownerId": "2b9dc998-2c29-4aef-90af-58a938a3d013",
   "networkId": "5c701cdc-496d-42aa-802c-fa065e2a83a0",
   "name": "prod-cluster",
   "cpu": 2,
@@ -450,24 +460,25 @@ or on failure:
 (the underlying error detail is on the **job**, not the cluster — see Jobs).
 
 **Errors:**
-- `400` — missing `ownerId`/`networkId`, bad `name`, or `cpu`/`memory`/`disk` below minimum (message names which field and by how much)
-- `404` `"cluster network not found"` — bad `networkId`
-- `409` `"cluster already exists"` — this owner already has a cluster with that `name`
-- `500` — bad `ownerId` (FK violation), or a job-creation/database error
+- `401` — not logged in
+- `400` — missing `networkId`, bad `name`, or `cpu`/`memory`/`disk` below minimum (message names which field and by how much)
+- `404` `"cluster network not found"` — `networkId` doesn't exist, or belongs to someone else (identical response either way)
+- `409` `"cluster already exists"` — **you** already have a cluster with that `name`
+- `500` — a job-creation/database error
 
 ### `GET /api/v1/clusters`
 
-**Response `200`:** `{ "clusters": [ Cluster, ... ] }` (newest first, all owners)
+**Response `200`:** `{ "clusters": [ Cluster, ... ] }` — only the caller's own clusters, newest first.
 
 ### `GET /api/v1/clusters/:id`
 
-**Response `200`:** `{ "cluster": Cluster }` · **`404`** if not found.
+**Response `200`:** `{ "cluster": Cluster }` · **`404`** if not found *or* owned by someone else.
 
 ### `GET /api/v1/clusters/:id/nodes`
 
 Lists the cluster's nodes — master first, then workers in the order they
 were added. This is how the UI discovers node IDs, `jobId`s, IPs, and
-per-node status.
+per-node status. `404` if the cluster doesn't exist or belongs to someone else.
 
 **Response `200`:**
 ```json
@@ -517,15 +528,16 @@ the job progresses far enough to know them.
 
 ### `POST /api/v1/clusters/:id/nodes`
 
-Adds a worker node to a cluster. Launches a VM on the cluster's network,
-fetches a **fresh** join token from the master
+Adds a worker node to a cluster you own. Launches a VM on the cluster's
+network, fetches a **fresh** join token from the master
 (`kubeadm token create --print-join-command` — not the one `kubeadm init`
 printed originally, which may be long expired), and runs `kubeadm join`.
 Same async-job pattern as cluster creation.
 
-**Preconditions** (checked before anything is created — `409` if not met):
-- The cluster's `status` must be `"ready"`.
-- The cluster's master node `status` must be `"running"`.
+**Preconditions** (checked before anything is created):
+- The cluster must exist and belong to you (`404` otherwise).
+- The cluster's `status` must be `"ready"` (`409` otherwise).
+- The cluster's master node `status` must be `"running"` (`409` otherwise).
 
 **Request:** entirely optional — `{}` or no body at all is valid and uses
 every default.
@@ -563,7 +575,8 @@ Poll `GET /api/v1/jobs/:jobId`; on success the job's `message` becomes
 `"Node joined the cluster"` and the node's `status` becomes `"running"`.
 
 **Errors:**
-- `404` `"cluster not found"`
+- `401` — not logged in
+- `404` `"cluster not found"` — doesn't exist, or belongs to someone else
 - `409` `"cluster not ready"` — wait for the cluster's master to finish first
 - `409` `"master not running"` — same idea, different point of failure
 - `400` — `cpu`/`memory`/`disk` below minimum
@@ -580,12 +593,12 @@ Poll `GET /api/v1/jobs/:jobId`; on success the job's `message` becomes
 Read-only — jobs are only ever created as a side effect of `POST
 /api/v1/clusters` or `POST /api/v1/clusters/:id/nodes`. This is the primary
 polling target for provisioning progress (see "The async job pattern").
+**Requires a session; every job is scoped to the caller** — you'll never
+see or be able to fetch someone else's job, even by guessing its id.
 
 ### `GET /api/v1/jobs`
 
-**Response `200`:** `{ "jobs": [ Job, ... ] }` (newest first, **all jobs
-system-wide** — no filter by node/cluster; find the `jobId` you care about
-via the node/cluster endpoints first, then poll it individually).
+**Response `200`:** `{ "jobs": [ Job, ... ] }` — only the caller's own jobs, newest first; no filter by node/cluster, so find the `jobId` you care about via the node/cluster endpoints first, then poll it individually.
 
 ### `GET /api/v1/jobs/:id`
 
@@ -594,6 +607,7 @@ via the node/cluster endpoints first, then poll it individually).
 {
   "job": {
     "id": "a0ed32d1-408a-4376-bd8e-5d54e9126bff",
+    "ownerId": "2b9dc998-2c29-4aef-90af-58a938a3d013",
     "type": "node_provision",
     "name": "Provision worker node worker-d6da0b009b36",
     "status": "running",
@@ -627,7 +641,7 @@ error message (use `message` for that).
 `type` is currently always `"node_provision"` (used for both master and
 worker provisioning — check `metadata.role` to distinguish which).
 
-**Errors:** `404` `"job not found"`.
+**Errors:** `401` not logged in · `404` `"job not found"` — doesn't exist, or belongs to someone else.
 
 ---
 
@@ -651,9 +665,10 @@ and a message like `"memory: Invalid value: lots"`.
  0. GET  /api/v1/auth/status                                           → adminCreated
  0a. (first run) POST /api/v1/auth/register-admin  {username, password} → logged in as admin
  0b. (steady state) POST /api/v1/auth/login         {username, password} → logged in
- 1. POST /api/v1/users                        {username, password}    → user.id  (admin session required)
- 2. POST /api/v1/networks                     {ownerId, name, cidr}   → network.id
- 3. POST /api/v1/clusters                     {ownerId, networkId, name} → cluster.id (202, status: creating)
+ 1. (admin only) POST /api/v1/users            {username, password}    → user.id
+ 1a. (as that user) POST /api/v1/auth/login    {username, password}    → logged in as that user
+ 2. POST /api/v1/networks                     {name, cidr}            → network.id  (owned by whoever is logged in)
+ 3. POST /api/v1/clusters                     {networkId, name}       → cluster.id (202, status: creating)
  4. GET  /api/v1/clusters/:id/nodes                                    → nodes[0].jobId (the master)
  5. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
  6. GET  /api/v1/clusters/:id                                          → confirm status: ready
@@ -662,19 +677,15 @@ and a message like `"memory: Invalid value: lots"`.
  9. GET  /api/v1/clusters/:id/nodes                                    → confirm the new worker's status: running
 ```
 
-Steps 2–9 are otherwise unauthenticated in this version (see Known gaps) —
-only step 1 (creating a `User`) actually enforces the admin session today.
+Steps 2–9 all run as whichever user is currently logged in (steps 1/1a are
+only relevant if that's a regular user the admin needs to create first —
+the admin itself can also directly own networks/clusters by skipping
+straight from 0a to step 2).
 
 ---
 
 ## Known gaps (don't build UI expecting these yet)
 
-- **Auth covers login/logout/session and who-can-create-users — nothing
-  else yet.** Creating/reading/deleting Cluster Networks, Clusters, and
-  Nodes doesn't check the caller's session at all; `ownerId` is a bare,
-  unvalidated-at-the-boundary UUID accepted at face value. Don't assume a
-  logged-in *regular* user is actually restricted to their own resources —
-  that enforcement doesn't exist yet.
 - Session TTL is 24h with no refresh — a user logged in for a full day
   gets a `401` on their next request and must log in again. No "remember
   me" / refresh token yet.
@@ -685,8 +696,5 @@ only step 1 (creating a `User`) actually enforces the admin session today.
   for this either way — it's an operational fact, not something the API
   reports.
 - No pagination on any list endpoint — expect small counts for now.
-- No filtering by owner on list endpoints (`GET /networks`, `/clusters`
-  return every owner's resources) — filter client-side if you need
-  per-user views.
 - Interrupted jobs (server restart mid-provisioning) are not recovered or
   retried — a job stuck in `"running"` after a backend restart is orphaned.

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -17,9 +18,11 @@ func NewTaskHandlers(manager *jobs.Manager) *TaskHandlers {
 	return &TaskHandlers{manager: manager}
 }
 
-// ListJobs returns all known jobs.
+// ListJobs returns the authenticated user's jobs.
 func (h *TaskHandlers) ListJobs(c fiber.Ctx) error {
-	jobs, err := h.manager.List()
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
+	jobs, err := h.manager.List(ownerID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "database error",
@@ -31,9 +34,11 @@ func (h *TaskHandlers) ListJobs(c fiber.Ctx) error {
 	return c.JSON(models.JobListResponse{Jobs: jobs})
 }
 
-// GetJob returns a single job by id.
+// GetJob returns a single job by id, scoped to the authenticated user.
 func (h *TaskHandlers) GetJob(c fiber.Ctx) error {
-	job, err := h.manager.Get(c.Params("id"))
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
+	job, err := h.manager.Get(c.Params("id"), ownerID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{

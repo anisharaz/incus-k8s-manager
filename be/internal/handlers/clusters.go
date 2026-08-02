@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -45,21 +46,16 @@ func NewClusterHandlers(db *gorm.DB, manager *jobs.Manager) *ClusterHandlers {
 // CreateCluster creates a cluster and its master node, then starts a
 // background job to launch the master's VM on the chosen network. Only the
 // VM is launched here — bootstrapping Kubernetes on it is a later step.
+// The owner is the authenticated session's user, who must also own the
+// referenced network.
 func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var req models.CreateClusterRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
 			Error:   "invalid request body",
 			Message: err.Error(),
-			Code:    fiber.StatusBadRequest,
-		})
-	}
-
-	req.OwnerID = strings.TrimSpace(req.OwnerID)
-	if req.OwnerID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
-			Error:   "validation error",
-			Message: "ownerId is required",
 			Code:    fiber.StatusBadRequest,
 		})
 	}
@@ -91,8 +87,10 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 		})
 	}
 
+	// Scoped by owner: a network owned by someone else looks like it
+	// doesn't exist, and you can't build a cluster on it either way.
 	var network models.ClusterNetwork
-	if err := h.db.Where("id = ?", req.NetworkID).First(&network).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_id = ?", req.NetworkID, ownerID).First(&network).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Error:   "not found",
@@ -109,7 +107,7 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 
 	// Fast pre-check for a friendlier duplicate-name error than the DB's own.
 	var count int64
-	h.db.Model(&models.Cluster{}).Where("owner_id = ? AND name = ?", req.OwnerID, req.Name).Count(&count)
+	h.db.Model(&models.Cluster{}).Where("owner_id = ? AND name = ?", ownerID, req.Name).Count(&count)
 	if count > 0 {
 		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
 			Error:   "cluster already exists",
@@ -120,7 +118,7 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 
 	cluster := models.Cluster{
 		ID:        uuid.New().String(),
-		OwnerID:   req.OwnerID,
+		OwnerID:   ownerID,
 		NetworkID: req.NetworkID,
 		Name:      req.Name,
 		Status:    string(models.ClusterStatusCreating),
@@ -152,7 +150,7 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 	}
 
 	// masterIncusName is unused for the master's own provisioning job.
-	job, err := h.manager.CreateNodeJob(node.ID, node.IncusName, network.IncusName, node.Role, "", size)
+	job, err := h.manager.CreateNodeJob(ownerID, node.ID, node.IncusName, network.IncusName, node.Role, "", size)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "job creation error",
@@ -165,10 +163,12 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 	return c.Status(fiber.StatusAccepted).JSON(models.ClusterResponse{Cluster: cluster})
 }
 
-// ListClusters returns all clusters.
+// ListClusters returns the authenticated user's clusters.
 func (h *ClusterHandlers) ListClusters(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var clusters []models.Cluster
-	if err := h.db.Order("created_at DESC").Find(&clusters).Error; err != nil {
+	if err := h.db.Where("owner_id = ?", ownerID).Order("created_at DESC").Find(&clusters).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "database error",
 			Message: err.Error(),
@@ -179,10 +179,12 @@ func (h *ClusterHandlers) ListClusters(c fiber.Ctx) error {
 	return c.JSON(models.ClusterListResponse{Clusters: clusters})
 }
 
-// GetCluster returns a single cluster by ID.
+// GetCluster returns a single cluster by ID, scoped to the authenticated user.
 func (h *ClusterHandlers) GetCluster(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var cluster models.Cluster
-	if err := h.db.Where("id = ?", c.Params("id")).First(&cluster).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_id = ?", c.Params("id"), ownerID).First(&cluster).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Error:   "not found",

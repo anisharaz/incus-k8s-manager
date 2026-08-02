@@ -32,8 +32,8 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 
 	// Status routes
 	v1.Get("/status", handlers.StatusHandler)
-	v1.Get("/jobs", taskHandlers.ListJobs)
-	v1.Get("/jobs/:id", taskHandlers.GetJob)
+	v1.Get("/jobs", requireAuth, taskHandlers.ListJobs)
+	v1.Get("/jobs/:id", requireAuth, taskHandlers.GetJob)
 
 	// Auth routes. BootstrapStatus/RegisterAdmin/Login are necessarily
 	// public (there's no session before you have one); Me/Logout require
@@ -51,18 +51,18 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Get("/users", requireAuth, middleware.RequireAdmin, userHandlers.ListUsers)
 	v1.Get("/users/:id", requireAuth, middleware.RequireAdmin, userHandlers.GetUser)
 
-	// Cluster network routes
-	v1.Post("/networks", networkHandlers.CreateNetwork)
-	v1.Get("/networks", networkHandlers.ListNetworks)
-	v1.Get("/networks/:id", networkHandlers.GetNetwork)
-	v1.Delete("/networks/:id", networkHandlers.DeleteNetwork)
+	// Cluster network routes — every one scoped to the authenticated user.
+	v1.Post("/networks", requireAuth, networkHandlers.CreateNetwork)
+	v1.Get("/networks", requireAuth, networkHandlers.ListNetworks)
+	v1.Get("/networks/:id", requireAuth, networkHandlers.GetNetwork)
+	v1.Delete("/networks/:id", requireAuth, networkHandlers.DeleteNetwork)
 
-	// Cluster routes
-	v1.Post("/clusters", clusterHandlers.CreateCluster)
-	v1.Get("/clusters", clusterHandlers.ListClusters)
-	v1.Get("/clusters/:id", clusterHandlers.GetCluster)
-	v1.Get("/clusters/:id/nodes", nodeHandlers.ListNodesForCluster)
-	v1.Post("/clusters/:id/nodes", nodeHandlers.CreateNode)
+	// Cluster routes — every one scoped to the authenticated user.
+	v1.Post("/clusters", requireAuth, clusterHandlers.CreateCluster)
+	v1.Get("/clusters", requireAuth, clusterHandlers.ListClusters)
+	v1.Get("/clusters/:id", requireAuth, clusterHandlers.GetCluster)
+	v1.Get("/clusters/:id/nodes", requireAuth, nodeHandlers.ListNodesForCluster)
+	v1.Post("/clusters/:id/nodes", requireAuth, nodeHandlers.CreateNode)
 
 	// Root API endpoint
 	v1.Get("/", func(c fiber.Ctx) error {

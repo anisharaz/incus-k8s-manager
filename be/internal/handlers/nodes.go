@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -25,9 +26,29 @@ func NewNodeHandlers(db *gorm.DB, manager *jobs.Manager) *NodeHandlers {
 // ListNodesForCluster returns all nodes belonging to a cluster (master
 // first, then workers in creation order), so callers can poll VM status
 // (and, via jobId, the underlying job's progress) while a node is created.
+// The cluster must belong to the authenticated user.
 func (h *NodeHandlers) ListNodesForCluster(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+	clusterID := c.Params("id")
+
+	var cluster models.Cluster
+	if err := h.db.Where("id = ? AND owner_id = ?", clusterID, ownerID).First(&cluster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "cluster not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
 	var nodes []models.Node
-	if err := h.db.Where("cluster_id = ?", c.Params("id")).Order("created_at ASC").Find(&nodes).Error; err != nil {
+	if err := h.db.Where("cluster_id = ?", clusterID).Order("created_at ASC").Find(&nodes).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "database error",
 			Message: err.Error(),
@@ -44,11 +65,13 @@ func (h *NodeHandlers) ListNodesForCluster(c fiber.Ctx) error {
 // kubeadm init printed, which may be long expired), and runs kubeadm join
 // on the new VM. The request body is optional; cpu/memory/disk each
 // default if omitted, and are validated the same way as cluster creation.
+// The cluster must belong to the authenticated user.
 func (h *NodeHandlers) CreateNode(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
 	clusterID := c.Params("id")
 
 	var cluster models.Cluster
-	if err := h.db.Where("id = ?", clusterID).First(&cluster).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_id = ?", clusterID, ownerID).First(&cluster).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Error:   "not found",
@@ -139,7 +162,7 @@ func (h *NodeHandlers) CreateNode(c fiber.Ctx) error {
 		})
 	}
 
-	job, err := h.manager.CreateNodeJob(node.ID, node.IncusName, network.IncusName, node.Role, master.IncusName, size)
+	job, err := h.manager.CreateNodeJob(ownerID, node.ID, node.IncusName, network.IncusName, node.Role, master.IncusName, size)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "job creation error",

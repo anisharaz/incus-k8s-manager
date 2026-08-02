@@ -44,11 +44,14 @@ type NodeSize struct {
 // kubeconfig, and waits for the API server to report healthy. For a worker,
 // masterIncusName identifies the cluster's master, from which a fresh join
 // command is fetched (`kubeadm token create --print-join-command`) and run
-// on the new node; masterIncusName is ignored for a master.
-func (m *Manager) CreateNodeJob(nodeID, incusName, networkIncusName, role, masterIncusName string, size NodeSize) (*models.Job, error) {
+// on the new node; masterIncusName is ignored for a master. ownerID is the
+// resource owner (the cluster's owner) — stashed on the job row so job
+// visibility can be scoped per-user; it plays no role in provisioning itself.
+func (m *Manager) CreateNodeJob(ownerID, nodeID, incusName, networkIncusName, role, masterIncusName string, size NodeSize) (*models.Job, error) {
 	now := time.Now().UTC()
 	job := &models.Job{
 		ID:        uuid.NewString(),
+		OwnerID:   ownerID,
 		Type:      "node_provision",
 		Name:      fmt.Sprintf("Provision %s node %s", role, incusName),
 		Status:    models.JobStatusQueued,

@@ -20,19 +20,20 @@ func NewManager(db *gorm.DB, incusClient *incus.Client) *Manager {
 	return &Manager{db: db, incus: incusClient}
 }
 
-// List returns all jobs in reverse chronological order.
-func (m *Manager) List() ([]models.Job, error) {
+// List returns ownerID's jobs in reverse chronological order.
+func (m *Manager) List(ownerID string) ([]models.Job, error) {
 	var jobs []models.Job
-	if err := m.db.Order("created_at DESC").Find(&jobs).Error; err != nil {
+	if err := m.db.Where("owner_id = ?", ownerID).Order("created_at DESC").Find(&jobs).Error; err != nil {
 		return nil, err
 	}
 	return jobs, nil
 }
 
-// Get retrieves a job by id.
-func (m *Manager) Get(id string) (*models.Job, error) {
+// Get retrieves a job by id, scoped to ownerID — a job owned by someone
+// else looks identical to a nonexistent one (gorm.ErrRecordNotFound).
+func (m *Manager) Get(id, ownerID string) (*models.Job, error) {
 	var job models.Job
-	if err := m.db.Where("id = ?", id).First(&job).Error; err != nil {
+	if err := m.db.Where("id = ? AND owner_id = ?", id, ownerID).First(&job).Error; err != nil {
 		return nil, err
 	}
 	return &job, nil

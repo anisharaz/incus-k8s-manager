@@ -90,11 +90,11 @@ type ClusterNetwork struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// CreateClusterNetworkRequest represents the request to create a cluster network.
+// CreateClusterNetworkRequest represents the request to create a cluster
+// network. The owner is the authenticated session's user, not a body field.
 type CreateClusterNetworkRequest struct {
-	OwnerID string `json:"ownerId"`
-	Name    string `json:"name"`
-	CIDR    string `json:"cidr"`
+	Name string `json:"name"`
+	CIDR string `json:"cidr"`
 }
 
 // ClusterNetworkResponse wraps a single cluster network.
@@ -135,9 +135,10 @@ type Cluster struct {
 // CreateClusterRequest represents the request to create a cluster. Creating
 // a cluster launches its master node's VM sized to CPU/Memory/Disk (each
 // optional — omitted or zero-value falls back to the minimum). Memory and
-// Disk use Incus's size format (e.g. "2GiB", "20GiB").
+// Disk use Incus's size format (e.g. "2GiB", "20GiB"). The owner is the
+// authenticated session's user, not a body field; networkId must reference
+// a network that owner also owns.
 type CreateClusterRequest struct {
-	OwnerID   string `json:"ownerId"`
 	NetworkID string `json:"networkId"`
 	Name      string `json:"name"`
 	CPU       int    `json:"cpu,omitempty"`
@@ -222,9 +223,14 @@ const (
 	JobStatusFailed    JobStatus = "failed"
 )
 
-// Job represents a long-running background task. It is persisted to the jobs table.
+// Job represents a long-running background task. It is persisted to the
+// jobs table. OwnerID is denormalized from whichever resource the job is
+// provisioning (currently always a Node, transitively a Cluster's owner),
+// so job visibility can be scoped per-user with a plain equality filter
+// instead of joining through metadata.
 type Job struct {
 	ID          string            `gorm:"primaryKey" json:"id"`
+	OwnerID     string            `gorm:"column:owner_id;index" json:"ownerId"`
 	Type        string            `gorm:"index" json:"type"`
 	Name        string            `json:"name,omitempty"`
 	Status      JobStatus         `gorm:"type:varchar(20);index" json:"status"`

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
+	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -29,22 +30,16 @@ func NewNetworkHandlers(db *gorm.DB, incusClient *incus.Client) *NetworkHandlers
 
 // CreateNetwork validates the requested name/CIDR, checks it against every
 // network Incus currently knows about (not just ones this app created),
-// creates the Incus bridge network, and persists the result.
+// creates the Incus bridge network, and persists the result. The owner is
+// the authenticated session's user.
 func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var req models.CreateClusterNetworkRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
 			Error:   "invalid request body",
 			Message: err.Error(),
-			Code:    fiber.StatusBadRequest,
-		})
-	}
-
-	req.OwnerID = strings.TrimSpace(req.OwnerID)
-	if req.OwnerID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
-			Error:   "validation error",
-			Message: "ownerId is required",
 			Code:    fiber.StatusBadRequest,
 		})
 	}
@@ -72,7 +67,7 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 	// Fast pre-check for a friendlier duplicate-name error than the DB's own.
 	// Name only needs to be unique within the owner's own networks.
 	var count int64
-	h.db.Model(&models.ClusterNetwork{}).Where("owner_id = ? AND name = ?", req.OwnerID, req.Name).Count(&count)
+	h.db.Model(&models.ClusterNetwork{}).Where("owner_id = ? AND name = ?", ownerID, req.Name).Count(&count)
 	if count > 0 {
 		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
 			Error:   "network already exists",
@@ -118,7 +113,7 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 
 	clusterNetwork := models.ClusterNetwork{
 		ID:        id,
-		OwnerID:   req.OwnerID,
+		OwnerID:   ownerID,
 		Name:      req.Name,
 		IncusName: incusName,
 		CIDR:      network.String(),
@@ -141,10 +136,12 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(models.ClusterNetworkResponse{Network: clusterNetwork})
 }
 
-// ListNetworks returns all cluster networks.
+// ListNetworks returns the authenticated user's cluster networks.
 func (h *NetworkHandlers) ListNetworks(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var networks []models.ClusterNetwork
-	if err := h.db.Order("created_at DESC").Find(&networks).Error; err != nil {
+	if err := h.db.Where("owner_id = ?", ownerID).Order("created_at DESC").Find(&networks).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "database error",
 			Message: err.Error(),
@@ -155,10 +152,13 @@ func (h *NetworkHandlers) ListNetworks(c fiber.Ctx) error {
 	return c.JSON(models.ClusterNetworkListResponse{Networks: networks})
 }
 
-// GetNetwork returns a single cluster network by ID.
+// GetNetwork returns a single cluster network by ID, scoped to the
+// authenticated user — one owned by someone else looks like it doesn't exist.
 func (h *NetworkHandlers) GetNetwork(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var network models.ClusterNetwork
-	if err := h.db.Where("id = ?", c.Params("id")).First(&network).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_id = ?", c.Params("id"), ownerID).First(&network).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Error:   "not found",
@@ -176,10 +176,13 @@ func (h *NetworkHandlers) GetNetwork(c fiber.Ctx) error {
 	return c.JSON(models.ClusterNetworkResponse{Network: network})
 }
 
-// DeleteNetwork deletes a cluster network from both Incus and the database.
+// DeleteNetwork deletes a cluster network from both Incus and the
+// database, scoped to the authenticated user.
 func (h *NetworkHandlers) DeleteNetwork(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+
 	var network models.ClusterNetwork
-	if err := h.db.Where("id = ?", c.Params("id")).First(&network).Error; err != nil {
+	if err := h.db.Where("id = ? AND owner_id = ?", c.Params("id"), ownerID).First(&network).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Error:   "not found",
