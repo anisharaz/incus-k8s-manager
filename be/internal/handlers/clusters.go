@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -78,6 +79,15 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 		})
 	}
 
+	cni, err := validateCNI(req.CNI)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "validation error",
+			Message: err.Error(),
+			Code:    fiber.StatusBadRequest,
+		})
+	}
+
 	size, err := validateNodeSize(req.CPU, req.Memory, req.Disk)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
@@ -121,6 +131,7 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 		OwnerID:   ownerID,
 		NetworkID: req.NetworkID,
 		Name:      req.Name,
+		CNI:       cni,
 		Status:    string(models.ClusterStatusCreating),
 		Message:   "Cluster creation started",
 	}
@@ -150,7 +161,7 @@ func (h *ClusterHandlers) CreateCluster(c fiber.Ctx) error {
 	}
 
 	// masterIncusName is unused for the master's own provisioning job.
-	job, err := h.manager.CreateNodeJob(ownerID, node.ID, node.IncusName, network.IncusName, node.Role, "", size)
+	job, err := h.manager.CreateNodeJob(ownerID, node.ID, node.IncusName, network.IncusName, node.Role, "", cni, size)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "job creation error",
@@ -200,6 +211,30 @@ func (h *ClusterHandlers) GetCluster(c fiber.Ctx) error {
 	}
 
 	return c.JSON(models.ClusterResponse{Cluster: cluster})
+}
+
+// allowedCNIs are the CNI values CreateCluster accepts. Extend this set (and
+// jobs.cniInstallers) to support another CNI later.
+var allowedCNIs = map[string]bool{
+	string(models.CNITypeCilium): true,
+}
+
+// validateCNI defaults an empty cni to CNITypeCilium and rejects anything
+// not in allowedCNIs, listing the allowed values in the error.
+func validateCNI(cni string) (string, error) {
+	cni = strings.TrimSpace(cni)
+	if cni == "" {
+		return string(models.CNITypeCilium), nil
+	}
+	if !allowedCNIs[cni] {
+		allowed := make([]string, 0, len(allowedCNIs))
+		for k := range allowedCNIs {
+			allowed = append(allowed, k)
+		}
+		sort.Strings(allowed)
+		return "", fmt.Errorf("cni must be one of [%s], got %q", strings.Join(allowed, ", "), cni)
+	}
+	return cni, nil
 }
 
 // validateNodeSize applies the minimum to any unset field (cpu == 0 or

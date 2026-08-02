@@ -117,6 +117,16 @@ const (
 	ClusterStatusDeleting ClusterStatus = "deleting"
 )
 
+// CNIType is the pod networking plugin a cluster's master installs after
+// kubeadm init. Adding a new one: add a constant here, add it to
+// handlers.allowedCNIs, and add an installer to jobs.cniInstallers
+// (internal/jobs/cni.go) — no other control flow changes.
+type CNIType string
+
+const (
+	CNITypeCilium CNIType = "cilium"
+)
+
 // Cluster represents a Kubernetes cluster: a named group of nodes (one
 // master, zero or more workers) launched onto a single cluster network.
 // Name is a display name, unique per owner; a cluster isn't itself an Incus
@@ -126,6 +136,7 @@ type Cluster struct {
 	OwnerID   string    `gorm:"column:owner_id;index" json:"ownerId"`
 	NetworkID string    `gorm:"column:network_id;index" json:"networkId"`
 	Name      string    `json:"name"`
+	CNI       string    `gorm:"column:cni;type:varchar(20)" json:"cni"`
 	Status    string    `gorm:"type:varchar(20)" json:"status"`
 	Message   string    `json:"message,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -135,12 +146,14 @@ type Cluster struct {
 // CreateClusterRequest represents the request to create a cluster. Creating
 // a cluster launches its master node's VM sized to CPU/Memory/Disk (each
 // optional — omitted or zero-value falls back to the minimum). Memory and
-// Disk use Incus's size format (e.g. "2GiB", "20GiB"). The owner is the
-// authenticated session's user, not a body field; networkId must reference
-// a network that owner also owns.
+// Disk use Incus's size format (e.g. "2GiB", "20GiB"). Cni is optional and
+// defaults to CNITypeCilium, currently the only allowed value. The owner is
+// the authenticated session's user, not a body field; networkId must
+// reference a network that owner also owns.
 type CreateClusterRequest struct {
 	NetworkID string `json:"networkId"`
 	Name      string `json:"name"`
+	CNI       string `json:"cni,omitempty"`
 	CPU       int    `json:"cpu,omitempty"`
 	Memory    string `json:"memory,omitempty"`
 	Disk      string `json:"disk,omitempty"`

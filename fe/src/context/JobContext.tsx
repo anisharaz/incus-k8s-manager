@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { JobContext, type DemoJobInput, type Job } from "./job.context";
-
-const jobsApiBase = "/api/v1/jobs";
+import { JobContext } from "./job.context";
+import type { Job } from "@/lib/types";
+import { api } from "@/lib/api";
 
 function isActiveJob(job: Job) {
   return job.status === "queued" || job.status === "running";
@@ -16,13 +16,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
     try {
       setLoading(true);
       setError(null);
-
-      const response = await fetch(jobsApiBase);
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data: { jobs: Job[] } = await response.json();
+      const data = await api.get<{ jobs: Job[] }>("/api/v1/jobs");
       setJobs(data.jobs ?? []);
     } catch (err) {
       const message =
@@ -32,24 +26,6 @@ export function JobProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  };
-
-  const submitDemoJob = async ({ name, durationSeconds }: DemoJobInput) => {
-    const response = await fetch(`${jobsApiBase}/demo`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name, durationSeconds }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data: { job: Job } = await response.json();
-    await refreshJobs();
-    return data.job;
   };
 
   useEffect(() => {
@@ -76,7 +52,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 
   return (
     <JobContext.Provider
-      value={{ jobs, activeJobs, loading, error, submitDemoJob, refreshJobs }}
+      value={{ jobs, activeJobs, loading, error, refreshJobs }}
     >
       {children}
     </JobContext.Provider>

@@ -9,10 +9,11 @@ export { useStatus } from "./useStatus";
 // Re-export jobs context and hook
 export { JobProvider } from "./JobContext";
 export { JobContext } from "./job.context";
-export type {
-  JobContextType,
-  Job,
-  JobStatus,
-  DemoJobInput,
-} from "./job.context";
+export type { JobContextType, Job, JobStatus } from "./job.context";
 export { useJobs } from "./useJobs";
+
+// Re-export auth context and hook
+export { AuthProvider } from "./AuthContext";
+export { AuthContext } from "./auth.context";
+export type { AuthContextType, AuthStatus } from "./auth.context";
+export { useAuth } from "./useAuth";

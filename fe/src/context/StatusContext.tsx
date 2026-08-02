@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { StatusContext } from "./status.context";
+import { api } from "@/lib/api";
 
 export function StatusProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<{ incus: string } | null>(null);
@@ -10,13 +11,9 @@ export function StatusProvider({ children }: { children: ReactNode }) {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch("/api/v1/status");
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await api.get<{ status: { incus: string } }>(
+        "/api/v1/status",
+      );
       setStatus(data.status);
     } catch (err) {
       const message =

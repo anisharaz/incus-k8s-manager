@@ -1,6 +1,7 @@
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -10,23 +11,27 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
-import { Boxes, Settings2, Zap } from "lucide-react";
-import { Link } from "react-router";
+import { Boxes, LogOut, Network, Settings2, Users, Zap } from "lucide-react";
+import { Link, useLocation } from "react-router";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/context";
 
 const menuItems = [
-  {
-    title: "Clusters",
-    icon: Boxes,
-    href: "/clusters",
-  },
-  {
-    title: "Incus Setting",
-    icon: Settings2,
-    href: "/settings",
-  },
+  { title: "Clusters", icon: Boxes, href: "/clusters" },
+  { title: "Networks", icon: Network, href: "/networks" },
+  { title: "Settings", icon: Settings2, href: "/settings" },
 ];
 
 export function AppSidebar() {
+  const location = useLocation();
+  const { user, logout } = useAuth();
+
+  const items =
+    user?.role === "admin"
+      ? [...menuItems, { title: "Users", icon: Users, href: "/users" }]
+      : menuItems;
+
   return (
     <Sidebar>
       <SidebarHeader className="border-b">
@@ -40,20 +45,51 @@ export function AppSidebar() {
           <SidebarGroupLabel>Menu</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
-                    <Link to={item.href} className="flex items-center gap-2">
-                      <item.icon className="w-4 h-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              {items.map((item) => {
+                const isActive =
+                  location.pathname === item.href ||
+                  location.pathname.startsWith(item.href + "/");
+                return (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton asChild isActive={isActive}>
+                      <Link
+                        to={item.href}
+                        className="flex items-center gap-2"
+                      >
+                        <item.icon className="w-4 h-4" />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="border-t">
+        {user && (
+          <div className="flex items-center justify-between gap-2 px-2 py-1">
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate text-sm font-medium">
+                {user.username}
+              </span>
+              <Badge variant="secondary" className="w-fit text-xs capitalize">
+                {user.role}
+              </Badge>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => logout()}
+              aria-label="Log out"
+              title="Log out"
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      </SidebarFooter>
       <SidebarRail />
     </Sidebar>
   );

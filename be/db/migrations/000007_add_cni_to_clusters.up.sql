@@ -1,0 +1,1 @@
+ALTER TABLE clusters ADD COLUMN cni VARCHAR(20) NOT NULL DEFAULT 'cilium';

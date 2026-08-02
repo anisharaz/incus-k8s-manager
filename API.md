@@ -157,6 +157,7 @@ User
 UserRole             = "admin" | "user"
 ClusterNetworkStatus = "creating" | "ready" | "failed"
 ClusterStatus        = "creating" | "ready" | "failed" | "deleting"  // "deleting" is defined but not yet used by any endpoint
+CNIType               = "cilium"  // the only implemented value today; more may be added later
 NodeRole              = "master" | "worker"
 NodeStatus            = "creating" | "running" | "stopped" | "failed" | "deleting"  // "stopped"/"deleting" defined but not yet used
 JobStatus             = "queued" | "running" | "succeeded" | "failed"
@@ -403,6 +404,7 @@ its id (see Errors).
 {
   "networkId": "5c701cdc-496d-42aa-802c-fa065e2a83a0",
   "name": "prod-cluster",
+  "cni": "cilium",
   "cpu": 2,
   "memory": "2GiB",
   "disk": "20GiB"
@@ -410,6 +412,12 @@ its id (see Errors).
 ```
 
 - `name` — free-form, 1–63 chars, unique **per owner**.
+- `cni` — **optional**, the pod networking plugin the master installs after
+  `kubeadm init`. Defaults to `"cilium"` if omitted/empty. `"cilium"` is
+  currently the **only allowed value** — any other value is **rejected with
+  `400`**, listing the allowed set in the message. The request/response
+  shape is deliberately unchanged by this restriction, so adding more CNIs
+  later won't require an API version bump.
 - `cpu`, `memory`, `disk` — **all optional**, size the master's VM. Omit any
   of them (or send `0`/`""`) to use the default. If provided, each is
   checked against a minimum and the request is **rejected with `400`** if
@@ -436,6 +444,7 @@ its id (see Errors).
     "ownerId": "2b9dc998-2c29-4aef-90af-58a938a3d013",
     "networkId": "5c701cdc-496d-42aa-802c-fa065e2a83a0",
     "name": "prod-cluster",
+    "cni": "cilium",
     "status": "creating",
     "message": "Cluster creation started",
     "createdAt": "2026-08-02T01:43:41.23486713+05:30",
@@ -461,7 +470,7 @@ or on failure:
 
 **Errors:**
 - `401` — not logged in
-- `400` — missing `networkId`, bad `name`, or `cpu`/`memory`/`disk` below minimum (message names which field and by how much)
+- `400` — missing `networkId`, bad `name`, unrecognized `cni`, or `cpu`/`memory`/`disk` below minimum (message names which field and why)
 - `404` `"cluster network not found"` — `networkId` doesn't exist, or belongs to someone else (identical response either way)
 - `409` `"cluster already exists"` — **you** already have a cluster with that `name`
 - `500` — a job-creation/database error

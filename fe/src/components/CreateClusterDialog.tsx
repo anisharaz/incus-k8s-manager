@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate, Link } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Plus } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight } from "lucide-react";
 
 import {
   Dialog,
@@ -24,15 +25,43 @@ import {
 } from "@/components/ui/form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { api, ApiError } from "@/lib/api";
+import type { Cluster, ClusterNetwork } from "@/lib/types";
+
+const sizeRegex = /^\d+(B|kB|MB|GB|TB|PB|EB|KiB|MiB|GiB|TiB|PiB|EiB)$/;
 
 const formSchema = z.object({
   name: z
     .string()
-    .min(3, { message: "Cluster name must be at least 3 characters" })
-    .max(255, { message: "Cluster name must be at most 255 characters" })
-    .regex(/^[a-z0-9-]+$/, {
-      message:
-        "Cluster name must contain only lowercase letters, numbers, and hyphens",
+    .min(1, "Name is required")
+    .max(63, "Name must be at most 63 characters"),
+  networkId: z.string().min(1, "Select a network"),
+  cni: z.string().min(1, "Select a CNI"),
+  cpu: z
+    .string()
+    .optional()
+    .refine((v) => !v || (/^\d+$/.test(v) && Number(v) >= 2), {
+      message: "Must be a whole number, at least 2",
+    }),
+  memory: z
+    .string()
+    .optional()
+    .refine((v) => !v || sizeRegex.test(v), {
+      message: 'Must look like "2GiB" or "1700MB"',
+    }),
+  disk: z
+    .string()
+    .optional()
+    .refine((v) => !v || sizeRegex.test(v), {
+      message: 'Must look like "20GiB"',
     }),
 });
 
@@ -43,52 +72,88 @@ interface CreateClusterDialogProps {
 }
 
 export function CreateClusterDialog({ onSuccess }: CreateClusterDialogProps) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [networks, setNetworks] = useState<ClusterNetwork[]>([]);
+  const [networksLoading, setNetworksLoading] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: "",
+      networkId: "",
+      cni: "cilium",
+      cpu: "",
+      memory: "",
+      disk: "",
     },
   });
+
+  useEffect(() => {
+    if (!open) return;
+    let isMounted = true;
+    const loadNetworks = async () => {
+      setNetworksLoading(true);
+      try {
+        const data = await api.get<{ networks: ClusterNetwork[] }>(
+          "/api/v1/networks",
+        );
+        if (isMounted) setNetworks(data.networks ?? []);
+      } catch {
+        if (isMounted) setNetworks([]);
+      } finally {
+        if (isMounted) setNetworksLoading(false);
+      }
+    };
+    loadNetworks();
+    return () => {
+      isMounted = false;
+    };
+  }, [open]);
 
   async function onSubmit(values: FormValues) {
     setIsLoading(true);
     try {
-      const response = await fetch("/api/v1/clusters", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      const result = await api.post<{ cluster: Cluster }>(
+        "/api/v1/clusters",
+        {
+          networkId: values.networkId,
+          name: values.name,
+          cni: values.cni,
+          ...(values.cpu ? { cpu: Number(values.cpu) } : {}),
+          ...(values.memory ? { memory: values.memory } : {}),
+          ...(values.disk ? { disk: values.disk } : {}),
         },
-        body: JSON.stringify(values),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to create cluster");
-      }
-
-      const result = await response.json();
-      console.log("Cluster created:", result);
-
+      );
       setOpen(false);
       form.reset();
       onSuccess?.();
-    } catch (error) {
-      console.error("Error creating cluster:", error);
-      form.setError("name", {
-        type: "manual",
+      navigate(`/clusters/${result.cluster.id}`);
+    } catch (err) {
+      form.setError("root", {
         message:
-          error instanceof Error ? error.message : "Failed to create cluster",
+          err instanceof ApiError ? err.message : "Failed to create cluster",
       });
     } finally {
       setIsLoading(false);
     }
   }
 
+  const noNetworks = !networksLoading && networks.length === 0;
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          form.reset();
+          setShowAdvanced(false);
+        }
+      }}
+    >
       <DialogTrigger asChild>
         <Button>
           <Plus className="mr-2 h-4 w-4" />
@@ -99,13 +164,21 @@ export function CreateClusterDialog({ onSuccess }: CreateClusterDialogProps) {
         <DialogHeader>
           <DialogTitle>Create New Cluster</DialogTitle>
           <DialogDescription>
-            Create a new Kubernetes cluster. The cluster creation will run in
-            the background.
+            Launches a master node on the chosen network. Cluster creation
+            runs in the background.
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            {form.formState.errors.root && (
+              <Alert variant="destructive">
+                <AlertDescription>
+                  {form.formState.errors.root.message}
+                </AlertDescription>
+              </Alert>
+            )}
+
             <FormField
               control={form.control}
               name="name"
@@ -115,18 +188,160 @@ export function CreateClusterDialog({ onSuccess }: CreateClusterDialogProps) {
                   <FormControl>
                     <Input
                       placeholder="e.g., k8s-prod"
-                      {...field}
                       disabled={isLoading}
+                      {...field}
                     />
                   </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="networkId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Network</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value}
+                    disabled={isLoading || networksLoading || noNetworks}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue
+                          placeholder={
+                            networksLoading
+                              ? "Loading networks..."
+                              : "Select a network"
+                          }
+                        />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {networks.map((network) => (
+                        <SelectItem key={network.id} value={network.id}>
+                          {network.name} ({network.cidr})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {noNetworks ? (
+                    <FormDescription>
+                      You don't have any networks yet.{" "}
+                      <Link
+                        to="/networks"
+                        className="underline underline-offset-2"
+                        onClick={() => setOpen(false)}
+                      >
+                        Create one first
+                      </Link>
+                      .
+                    </FormDescription>
+                  ) : (
+                    <FormMessage />
+                  )}
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="cni"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>CNI</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value}
+                    disabled={isLoading}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a CNI" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="cilium">Cilium</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <FormDescription>
-                    Enter a unique name for your cluster (3-255 characters). Use
-                    lowercase letters, numbers, and hyphens only.
+                    Cilium is currently the only supported CNI.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
+
+            <button
+              type="button"
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+              onClick={() => setShowAdvanced((v) => !v)}
+            >
+              {showAdvanced ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+              Advanced (CPU / memory / disk)
+            </button>
+
+            {showAdvanced && (
+              <div className="space-y-4 rounded-lg border p-3">
+                <FormField
+                  control={form.control}
+                  name="cpu"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>CPU (vCPUs)</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="Default: 2, minimum 2"
+                          disabled={isLoading}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="memory"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Memory</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="Default: 2GiB, minimum 1700MB"
+                          disabled={isLoading}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="disk"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Disk</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="Default: 20GiB, minimum 20GiB"
+                          disabled={isLoading}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            )}
 
             <DialogFooter>
               <Button
@@ -137,7 +352,7 @@ export function CreateClusterDialog({ onSuccess }: CreateClusterDialogProps) {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={isLoading}>
+              <Button type="submit" disabled={isLoading || noNetworks}>
                 {isLoading ? "Creating..." : "Create Cluster"}
               </Button>
             </DialogFooter>

@@ -162,7 +162,7 @@ func (h *NodeHandlers) CreateNode(c fiber.Ctx) error {
 		})
 	}
 
-	job, err := h.manager.CreateNodeJob(ownerID, node.ID, node.IncusName, network.IncusName, node.Role, master.IncusName, size)
+	job, err := h.manager.CreateNodeJob(ownerID, node.ID, node.IncusName, network.IncusName, node.Role, master.IncusName, "", size)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Error:   "job creation error",

@@ -12,8 +12,9 @@ import (
 
 // nodeProvisionTimeout bounds how long a single node's VM launch and (for a
 // master) kubeadm init are allowed to take. Generous because kubeadm may
-// need to pull control-plane images on first run.
-const nodeProvisionTimeout = 15 * time.Minute
+// need to pull control-plane images on first run, and a master additionally
+// downloads the Cilium CLI and pulls Cilium's own images during CNI install.
+const nodeProvisionTimeout = 20 * time.Minute
 
 // nodeImageAlias is the only VM image currently available: a prebaked
 // Ubuntu + Kubernetes image (see meta/incusDocker).
@@ -41,13 +42,16 @@ type NodeSize struct {
 // background: it launches the node's VM (sized per `size`) on the given
 // network, waits for it to get an IP and come up, and updates the node row
 // throughout. For a master, it also runs `kubeadm init`, copies the admin
-// kubeconfig, and waits for the API server to report healthy. For a worker,
-// masterIncusName identifies the cluster's master, from which a fresh join
-// command is fetched (`kubeadm token create --print-join-command`) and run
-// on the new node; masterIncusName is ignored for a master. ownerID is the
-// resource owner (the cluster's owner) — stashed on the job row so job
-// visibility can be scoped per-user; it plays no role in provisioning itself.
-func (m *Manager) CreateNodeJob(ownerID, nodeID, incusName, networkIncusName, role, masterIncusName string, size NodeSize) (*models.Job, error) {
+// kubeconfig, waits for the API server to report healthy, and installs cni
+// (see jobs.cniInstallers). For a worker, masterIncusName identifies the
+// cluster's master, from which a fresh join command is fetched (`kubeadm
+// token create --print-join-command`) and run on the new node;
+// masterIncusName is ignored for a master, and cni is ignored for a worker
+// (CNI is a cluster-wide, master-only concern, never re-run on join).
+// ownerID is the resource owner (the cluster's owner) — stashed on the job
+// row so job visibility can be scoped per-user; it plays no role in
+// provisioning itself.
+func (m *Manager) CreateNodeJob(ownerID, nodeID, incusName, networkIncusName, role, masterIncusName, cni string, size NodeSize) (*models.Job, error) {
 	now := time.Now().UTC()
 	job := &models.Job{
 		ID:        uuid.NewString(),
@@ -67,7 +71,7 @@ func (m *Manager) CreateNodeJob(ownerID, nodeID, incusName, networkIncusName, ro
 		return nil, err
 	}
 
-	go m.runNodeJob(job.ID, nodeID, incusName, networkIncusName, role, masterIncusName, size)
+	go m.runNodeJob(job.ID, nodeID, incusName, networkIncusName, role, masterIncusName, cni, size)
 
 	return job, nil
 }
@@ -77,7 +81,7 @@ func (m *Manager) CreateNodeJob(ownerID, nodeID, incusName, networkIncusName, ro
 // bootstraps it per its role (kubeadm init for a master, fetch-join-and-run
 // for a worker) before marking the node running. If the node is a
 // cluster's master, it also updates the cluster's status.
-func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role, masterIncusName string, size NodeSize) {
+func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role, masterIncusName, cni string, size NodeSize) {
 	ctx, cancel := context.WithTimeout(context.Background(), nodeProvisionTimeout)
 	defer cancel()
 
@@ -173,6 +177,18 @@ func (m *Manager) runNodeJob(jobID, nodeID, incusName, networkIncusName, role, m
 		})
 
 		if err := m.waitForClusterHealthy(ctx, incusName); err != nil {
+			m.failNodeJob(jobID, nodeID, err)
+			return
+		}
+
+		m.updateJob(jobID, func(job *models.Job) {
+			job.Stage = "installing-cni"
+			job.Progress = 97
+			job.Message = fmt.Sprintf("Installing %s CNI...", cni)
+		})
+		m.updateNode(nodeID, map[string]any{"message": "Installing CNI"})
+
+		if err := installCNI(ctx, m, incusName, cni); err != nil {
 			m.failNodeJob(jobID, nodeID, err)
 			return
 		}
