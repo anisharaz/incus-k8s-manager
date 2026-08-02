@@ -53,16 +53,44 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 		})
 	}
 
+	// CIDR is optional: if the caller doesn't supply one, Incus picks an
+	// unused private subnet itself ("ipv4.address": "auto") — we only do
+	// our own parsing/conflict-checking when a specific CIDR is requested.
 	req.CIDR = strings.TrimSpace(req.CIDR)
-	network, err := parseClusterCIDR(req.CIDR)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
-			Error:   "validation error",
-			Message: err.Error(),
-			Code:    fiber.StatusBadRequest,
-		})
+	autoCIDR := req.CIDR == ""
+
+	var network *net.IPNet
+	var gateway net.IP
+
+	if !autoCIDR {
+		var err error
+		network, err = parseClusterCIDR(req.CIDR)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+				Error:   "validation error",
+				Message: err.Error(),
+				Code:    fiber.StatusBadRequest,
+			})
+		}
+		gateway = gatewayForNetwork(network)
+
+		existing, err := h.incus.ListNetworks()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+				Error:   "incus error",
+				Message: err.Error(),
+				Code:    fiber.StatusInternalServerError,
+			})
+		}
+
+		if conflictName, conflictCIDR, found := findConflictingNetwork(existing, network); found {
+			return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+				Error:   "cidr conflict",
+				Message: fmt.Sprintf("requested CIDR %s overlaps with existing Incus network %q (%s)", req.CIDR, conflictName, conflictCIDR),
+				Code:    fiber.StatusConflict,
+			})
+		}
 	}
-	gateway := gatewayForNetwork(network)
 
 	// Fast pre-check for a friendlier duplicate-name error than the DB's own.
 	// Name only needs to be unique within the owner's own networks.
@@ -76,28 +104,15 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 		})
 	}
 
-	existing, err := h.incus.ListNetworks()
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
-			Error:   "incus error",
-			Message: err.Error(),
-			Code:    fiber.StatusInternalServerError,
-		})
-	}
-
-	if conflictName, conflictCIDR, found := findConflictingNetwork(existing, network); found {
-		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
-			Error:   "cidr conflict",
-			Message: fmt.Sprintf("requested CIDR %s overlaps with existing Incus network %q (%s)", req.CIDR, conflictName, conflictCIDR),
-			Code:    fiber.StatusConflict,
-		})
-	}
-
-	ones, _ := network.Mask.Size()
 	incusConfig := map[string]string{
-		"ipv4.address": fmt.Sprintf("%s/%d", gateway, ones),
 		"ipv4.nat":     "true",
 		"ipv6.address": "none",
+	}
+	if autoCIDR {
+		incusConfig["ipv4.address"] = "auto"
+	} else {
+		ones, _ := network.Mask.Size()
+		incusConfig["ipv4.address"] = fmt.Sprintf("%s/%d", gateway, ones)
 	}
 
 	id := uuid.New().String()
@@ -109,6 +124,30 @@ func (h *NetworkHandlers) CreateNetwork(c fiber.Ctx) error {
 			Message: err.Error(),
 			Code:    fiber.StatusInternalServerError,
 		})
+	}
+
+	if autoCIDR {
+		created, err := h.incus.GetNetwork(incusName)
+		if err != nil {
+			_ = h.incus.DeleteNetwork(incusName)
+			return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+				Error:   "incus error",
+				Message: "failed to read auto-assigned network config: " + err.Error(),
+				Code:    fiber.StatusInternalServerError,
+			})
+		}
+
+		ip, ipnet, err := net.ParseCIDR(created.Config["ipv4.address"])
+		if err != nil {
+			_ = h.incus.DeleteNetwork(incusName)
+			return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+				Error:   "incus error",
+				Message: "incus returned an unparseable auto-assigned address: " + err.Error(),
+				Code:    fiber.StatusInternalServerError,
+			})
+		}
+		network = ipnet
+		gateway = ip
 	}
 
 	clusterNetwork := models.ClusterNetwork{

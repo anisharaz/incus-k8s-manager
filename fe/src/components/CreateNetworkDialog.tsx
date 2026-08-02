@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 
 import {
   Dialog,
@@ -35,11 +35,13 @@ const formSchema = z.object({
     .max(63, "Name must be at most 63 characters"),
   cidr: z
     .string()
-    .regex(
-      /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/,
+    .optional()
+    .refine(
+      (v) => !v || /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(v),
       "Must be a CIDR like 10.10.0.0/24",
     )
     .refine((v) => {
+      if (!v) return true;
       const prefix = Number(v.split("/")[1]);
       return prefix >= 8 && prefix <= 29;
     }, "Prefix length must be between /8 and /29"),
@@ -54,6 +56,7 @@ interface CreateNetworkDialogProps {
 export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
   const [open, setOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -65,10 +68,14 @@ export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
     try {
       const result = await api.post<{ network: ClusterNetwork }>(
         "/api/v1/networks",
-        values,
+        {
+          name: values.name,
+          ...(values.cidr ? { cidr: values.cidr } : {}),
+        },
       );
       setOpen(false);
       form.reset();
+      setShowAdvanced(false);
       onSuccess?.(result.network);
     } catch (err) {
       form.setError("root", {
@@ -85,7 +92,10 @@ export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) form.reset();
+        if (!next) {
+          form.reset();
+          setShowAdvanced(false);
+        }
       }}
     >
       <DialogTrigger asChild>
@@ -99,7 +109,7 @@ export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
           <DialogTitle>Create Cluster Network</DialogTitle>
           <DialogDescription>
             Creates an Incus bridge network that clusters can be launched
-            onto.
+            onto. By default Incus picks an unused subnet automatically.
           </DialogDescription>
         </DialogHeader>
 
@@ -129,27 +139,44 @@ export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
                 </FormItem>
               )}
             />
-            <FormField
-              control={form.control}
-              name="cidr"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>CIDR</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="10.10.0.0/24"
-                      disabled={isLoading}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    An IPv4 network address (no host bits), prefix between
-                    /8 and /29.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
+
+            <button
+              type="button"
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+              onClick={() => setShowAdvanced((v) => !v)}
+            >
+              {showAdvanced ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
               )}
-            />
+              Advanced (custom CIDR)
+            </button>
+
+            {showAdvanced && (
+              <FormField
+                control={form.control}
+                name="cidr"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>CIDR</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Auto-assigned if left blank"
+                        disabled={isLoading}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      An IPv4 network address (no host bits), prefix between
+                      /8 and /29.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+
             <DialogFooter>
               <Button
                 type="button"

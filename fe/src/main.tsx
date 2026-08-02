@@ -4,13 +4,16 @@ import "./index.css";
 import App from "./App.tsx";
 import { AuthProvider } from "./context";
 import { BrowserRouter } from "react-router";
+import { ThemeProvider } from "next-themes";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <BrowserRouter>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </BrowserRouter>
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <BrowserRouter>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 );

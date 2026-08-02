@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { ArrowLeft, ServerCog, AlertCircle, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, ServerCog, AlertCircle, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -200,6 +201,7 @@ export function ClusterDetail() {
   const masterJob = master ? nodeJobs[master.id] : undefined;
   const canAddWorker =
     cluster.status === "ready" && master?.status === "running";
+  const isCreatingCluster = cluster.status === "creating";
   const isDeletingCluster = cluster.status === "deleting";
   const activeJob = clusterJob ?? masterJob;
 
@@ -252,13 +254,24 @@ export function ClusterDetail() {
             </p>
           </div>
           <div className="flex flex-col items-start gap-3 md:items-end">
-            <div className="rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">
+            <div
+              className={cn(
+                "relative rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground",
+                isCreatingCluster && "ring-1 ring-primary/40",
+              )}
+            >
+              {isCreatingCluster && (
+                <span className="pointer-events-none absolute inset-0 -z-10 animate-pulse rounded-2xl bg-primary/10 blur-md" />
+              )}
               <p className="flex items-center gap-2 font-medium text-foreground">
                 Status:
                 <Badge
                   variant={clusterStatusVariant[cluster.status]}
-                  className="capitalize"
+                  className="gap-1 capitalize"
                 >
+                  {isCreatingCluster && (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  )}
                   {cluster.status}
                 </Badge>
               </p>
@@ -269,7 +282,12 @@ export function ClusterDetail() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  disabled={isDeletingCluster}
+                  disabled={isCreatingCluster || isDeletingCluster}
+                  title={
+                    isCreatingCluster
+                      ? "Wait for the cluster to finish creating before deleting it"
+                      : undefined
+                  }
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
                   Delete cluster
@@ -410,8 +428,9 @@ export function ClusterDetail() {
                     <div className="flex flex-col gap-1">
                       <Badge
                         variant={nodeStatusVariant[node.status]}
-                        className="w-fit capitalize"
+                        className="w-fit gap-1 capitalize"
                       >
+                        {nodeBusy && <Loader2 className="h-3 w-3 animate-spin" />}
                         {node.status}
                       </Badge>
                       {nodeBusy && job && (

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { ArrowRight, ServerCog, AlertCircle } from "lucide-react";
+import { ArrowRight, Loader2, ServerCog, AlertCircle } from "lucide-react";
 import { CreateClusterDialog } from "@/components/CreateClusterDialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { Cluster, ClusterStatus } from "@/lib/types";
 
 const statusVariant: Record<
@@ -114,12 +115,20 @@ export function Clusters() {
 
       {!loading && clusters.length > 0 && (
         <section className="grid gap-4 lg:grid-cols-2">
-          {clusters.map((cluster) => (
+          {clusters.map((cluster) => {
+            const isCreating = cluster.status === "creating";
+            return (
             <Link
               key={cluster.id}
               to={`/clusters/${cluster.id}`}
-              className="group rounded-3xl border bg-card p-5 shadow-sm transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-md"
+              className={cn(
+                "group relative rounded-3xl border bg-card p-5 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md",
+                isCreating && "border-primary/40",
+              )}
             >
+              {isCreating && (
+                <span className="pointer-events-none absolute inset-0 -z-10 animate-pulse rounded-3xl bg-primary/10 blur-md" />
+              )}
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2">
@@ -128,8 +137,11 @@ export function Clusters() {
                     </h3>
                     <Badge
                       variant={statusVariant[cluster.status]}
-                      className="capitalize"
+                      className="gap-1 capitalize"
                     >
+                      {isCreating && (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      )}
                       {cluster.status}
                     </Badge>
                   </div>
@@ -164,7 +176,8 @@ export function Clusters() {
                 </div>
               </div>
             </Link>
-          ))}
+            );
+          })}
         </section>
       )}
     </div>

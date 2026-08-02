@@ -320,11 +320,15 @@ session and is scoped to the caller** — `401` if not logged in.
 
 ### `POST /api/v1/networks`
 
-Validates the CIDR against **every** network Incus currently knows about
-(not just ones created through this API — including the appliance's own
-bridge) to prevent an overlapping subnet, then creates the Incus bridge
-synchronously (this one's `201`, not `202` — no job/polling needed). Owned
-by the logged-in user.
+`cidr` is optional. If provided, it's validated against **every** network
+Incus currently knows about (not just ones created through this API —
+including the appliance's own bridge) to prevent an overlapping subnet. If
+omitted, Incus picks an unused private subnet itself
+(`"ipv4.address": "auto"`) — no client-side conflict-checking needed in
+that case, since the daemon guarantees the pick doesn't collide with
+anything it already manages. Either way, creation is synchronous (this
+one's `201`, not `202` — no job/polling needed). Owned by the logged-in
+user.
 
 **Request:**
 ```json
@@ -336,9 +340,10 @@ by the logged-in user.
 
 - `name` — free-form, 1–63 chars, unique **per owner** (two different users
   can both have a network named `"prod-net"`).
-- `cidr` — IPv4, must be the network address itself (no host bits — e.g.
-  `10.10.0.5/24` is rejected with a suggestion), prefix length between `/8`
-  and `/29`.
+- `cidr` — **optional**. If provided: IPv4, must be the network address
+  itself (no host bits — e.g. `10.10.0.5/24` is rejected with a
+  suggestion), prefix length between `/8` and `/29`. If omitted, Incus
+  auto-assigns one and the response reflects whatever it picked.
 
 **Response `201`:**
 ```json

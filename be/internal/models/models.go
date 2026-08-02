@@ -91,10 +91,12 @@ type ClusterNetwork struct {
 }
 
 // CreateClusterNetworkRequest represents the request to create a cluster
-// network. The owner is the authenticated session's user, not a body field.
+// network. CIDR is optional — if omitted, Incus auto-selects an unused
+// private subnet ("ipv4.address": "auto"). The owner is the authenticated
+// session's user, not a body field.
 type CreateClusterNetworkRequest struct {
 	Name string `json:"name"`
-	CIDR string `json:"cidr"`
+	CIDR string `json:"cidr,omitempty"`
 }
 
 // ClusterNetworkResponse wraps a single cluster network.

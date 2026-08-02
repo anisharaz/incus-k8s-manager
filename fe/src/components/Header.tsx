@@ -1,4 +1,5 @@
 import { useStatus } from "@/context";
+import { ModeToggle } from "./ModeToggle";
 
 const getStatusColor = (status: string) => {
   switch (status.toLowerCase()) {
@@ -45,6 +46,7 @@ export function Header() {
               </div>
             )}
           </div>
+          <ModeToggle />
         </div>
       </div>
     </header>

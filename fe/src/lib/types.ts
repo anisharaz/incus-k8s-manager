@@ -88,7 +88,7 @@ export interface AuthStatusResponse {
 
 export interface CreateNetworkInput {
   name: string;
-  cidr: string;
+  cidr?: string;
 }
 
 export interface CreateClusterInput {
