@@ -9,6 +9,7 @@ import (
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/webui"
+	contribws "github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
 	"gorm.io/gorm"
@@ -20,8 +21,8 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	statusHandlers := handlers.NewStatusHandlers(incusClient)
 	networkHandlers := handlers.NewNetworkHandlers(db, incusClient)
 	userHandlers := handlers.NewUserHandlers(db)
-	clusterHandlers := handlers.NewClusterHandlers(db, jobManager)
-	nodeHandlers := handlers.NewNodeHandlers(db, jobManager)
+	clusterHandlers := handlers.NewClusterHandlers(db, jobManager, incusClient)
+	nodeHandlers := handlers.NewNodeHandlers(db, jobManager, incusClient)
 	authHandlers := handlers.NewAuthHandlers(db, cfg.JWTSecret, cfg.CookieSecure)
 	requireAuth := middleware.RequireAuth(cfg.JWTSecret)
 
@@ -66,9 +67,11 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Post("/clusters", requireAuth, clusterHandlers.CreateCluster)
 	v1.Get("/clusters", requireAuth, clusterHandlers.ListClusters)
 	v1.Get("/clusters/:id", requireAuth, clusterHandlers.GetCluster)
+	v1.Get("/clusters/:id/kubeconfig", requireAuth, clusterHandlers.GetKubeconfig)
 	v1.Get("/clusters/:id/nodes", requireAuth, nodeHandlers.ListNodesForCluster)
 	v1.Post("/clusters/:id/nodes", requireAuth, nodeHandlers.CreateNode)
 	v1.Delete("/clusters/:id/nodes/:nodeId", requireAuth, nodeHandlers.DeleteNode)
+	v1.Get("/clusters/:id/nodes/:nodeId/terminal", requireAuth, nodeHandlers.CheckTerminalAccess, contribws.New(nodeHandlers.Terminal))
 	v1.Delete("/clusters/:id", requireAuth, clusterHandlers.DeleteCluster)
 
 	// Root API endpoint

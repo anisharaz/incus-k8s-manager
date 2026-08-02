@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
@@ -15,6 +16,11 @@ import (
 	"github.com/lxc/incus/v7/shared/units"
 	"gorm.io/gorm"
 )
+
+// rootKubeconfigPath mirrors the same constant in internal/jobs/node.go —
+// where the master's admin kubeconfig is copied so `kubectl` (and this
+// handler's download) can read it as the root user.
+const rootKubeconfigPath = "/root/.kube/config"
 
 // Minimum node VM allocation. CPU/Memory match kubeadm's own hard preflight
 // requirements (confirmed live: kubeadm rejects <2 CPUs or <1700MB RAM).
@@ -37,11 +43,12 @@ const defaultNodeMemory = "2GiB"
 type ClusterHandlers struct {
 	db      *gorm.DB
 	manager *jobs.Manager
+	incus   *incus.Client
 }
 
 // NewClusterHandlers creates a new cluster handler.
-func NewClusterHandlers(db *gorm.DB, manager *jobs.Manager) *ClusterHandlers {
-	return &ClusterHandlers{db: db, manager: manager}
+func NewClusterHandlers(db *gorm.DB, manager *jobs.Manager, incusClient *incus.Client) *ClusterHandlers {
+	return &ClusterHandlers{db: db, manager: manager, incus: incusClient}
 }
 
 // CreateCluster creates a cluster and its master node, then starts a
@@ -211,6 +218,61 @@ func (h *ClusterHandlers) GetCluster(c fiber.Ctx) error {
 	}
 
 	return c.JSON(models.ClusterResponse{Cluster: cluster})
+}
+
+// GetKubeconfig returns the cluster's admin kubeconfig as a downloadable
+// file, read live from the master's /root/.kube/config — not the usual
+// JSON envelope every other endpoint uses. The cluster must belong to the
+// authenticated user, and its master must be running.
+func (h *ClusterHandlers) GetKubeconfig(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+	clusterID := c.Params("id")
+
+	var cluster models.Cluster
+	if err := h.db.Where("id = ? AND owner_id = ?", clusterID, ownerID).First(&cluster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "cluster not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	var master models.Node
+	if err := h.db.Where("cluster_id = ? AND role = ?", clusterID, string(models.NodeRoleMaster)).First(&master).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: "cluster has no master node: " + err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	if master.Status != string(models.NodeStatusRunning) {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Error:   "master not running",
+			Message: "master node must be running to fetch its kubeconfig",
+			Code:    fiber.StatusConflict,
+		})
+	}
+
+	result, err := h.incus.Run(c.Context(), master.IncusName, []string{"cat", rootKubeconfigPath})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "incus error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	c.Set(fiber.HeaderContentType, "application/yaml")
+	c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s-kubeconfig.yaml"`, cluster.Name))
+	return c.SendString(result.Stdout)
 }
 
 // allowedCNIs are the CNI values CreateCluster accepts. Extend this set (and

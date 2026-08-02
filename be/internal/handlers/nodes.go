@@ -1,12 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
+	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/middleware"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
+	contribws "github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -16,11 +20,12 @@ import (
 type NodeHandlers struct {
 	db      *gorm.DB
 	manager *jobs.Manager
+	incus   *incus.Client
 }
 
 // NewNodeHandlers creates a new node handler.
-func NewNodeHandlers(db *gorm.DB, manager *jobs.Manager) *NodeHandlers {
-	return &NodeHandlers{db: db, manager: manager}
+func NewNodeHandlers(db *gorm.DB, manager *jobs.Manager, incusClient *incus.Client) *NodeHandlers {
+	return &NodeHandlers{db: db, manager: manager, incus: incusClient}
 }
 
 // ListNodesForCluster returns all nodes belonging to a cluster (master
@@ -268,4 +273,133 @@ func (h *NodeHandlers) DeleteNode(c fiber.Ctx) error {
 	node.Status = string(models.NodeStatusDeleting)
 	node.JobID = &job.ID
 	return c.Status(fiber.StatusAccepted).JSON(models.NodeResponse{Node: node})
+}
+
+// CheckTerminalAccess runs as a normal handler before the websocket
+// upgrade in the Terminal route, since auth/ownership/status checks need a
+// full fiber.Ctx (and a proper HTTP error response) rather than a
+// half-upgraded connection. On success it stashes the node's Incus name in
+// c.Locals for Terminal to read via the upgraded connection.
+func (h *NodeHandlers) CheckTerminalAccess(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+	clusterID := c.Params("id")
+	nodeID := c.Params("nodeId")
+
+	var cluster models.Cluster
+	if err := h.db.Where("id = ? AND owner_id = ?", clusterID, ownerID).First(&cluster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "cluster not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	var node models.Node
+	if err := h.db.Where("id = ? AND cluster_id = ?", nodeID, clusterID).First(&node).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "node not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	if node.Status != string(models.NodeStatusRunning) {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Error:   "node not running",
+			Message: "node must be running to open a terminal",
+			Code:    fiber.StatusConflict,
+		})
+	}
+
+	c.Locals("incusName", node.IncusName)
+	return c.Next()
+}
+
+// terminalControlMessage is the only text-frame message the browser sends —
+// everything else it sends is a binary frame of raw keystrokes.
+type terminalControlMessage struct {
+	Type string `json:"type"`
+	Cols int    `json:"cols"`
+	Rows int    `json:"rows"`
+}
+
+// writerFunc adapts a plain function to io.Writer, the same func-as-
+// interface idiom as http.HandlerFunc.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// Terminal bridges a browser websocket to an interactive bash session
+// inside the node's VM (see incus.Client.ExecInteractive). Binary frames
+// carry raw PTY bytes in both directions; text frames from the browser
+// carry a {"type":"resize","cols":N,"rows":N} control envelope. Runs until
+// the browser closes the socket (dialog close/navigation) — there's no
+// server-side idle timeout, same lifetime model as an SSH session.
+func (h *NodeHandlers) Terminal(conn *contribws.Conn) {
+	incusName, _ := conn.Locals("incusName").(string)
+	if incusName == "" {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stdinR, stdinW := io.Pipe()
+	defer stdinW.Close()
+
+	resize := make(chan [2]int, 1)
+	defer close(resize)
+
+	stdout := writerFunc(func(p []byte) (int, error) {
+		if err := conn.WriteMessage(contribws.BinaryMessage, p); err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- h.incus.ExecInteractive(ctx, incusName, stdinR, stdout, resize)
+	}()
+
+readLoop:
+	for {
+		msgType, data, err := conn.ReadMessage()
+		if err != nil {
+			break readLoop
+		}
+
+		switch msgType {
+		case contribws.BinaryMessage:
+			if _, err := stdinW.Write(data); err != nil {
+				break readLoop
+			}
+		case contribws.TextMessage:
+			var msg terminalControlMessage
+			if json.Unmarshal(data, &msg) == nil && msg.Type == "resize" && msg.Cols > 0 && msg.Rows > 0 {
+				select {
+				case resize <- [2]int{msg.Cols, msg.Rows}:
+				default:
+				}
+			}
+		}
+	}
+
+	cancel()
+	_ = stdinW.Close()
+	<-done
 }

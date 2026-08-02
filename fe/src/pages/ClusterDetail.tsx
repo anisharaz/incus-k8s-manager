@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { ArrowLeft, Loader2, ServerCog, AlertCircle, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  Loader2,
+  ServerCog,
+  AlertCircle,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AddNodeDialog } from "@/components/AddNodeDialog";
+import { NodeTerminalDialog } from "@/components/NodeTerminalDialog";
 import { api, ApiError } from "@/lib/api";
 import type {
   Cluster,
@@ -277,6 +285,28 @@ export function ClusterDetail() {
               </p>
               {master?.ip && <p className="mt-1">Master IP: {master.ip}</p>}
             </div>
+            <div className="flex items-center gap-2">
+              {master?.status === "running" ? (
+                <Button variant="outline" size="sm" asChild>
+                  <a
+                    href={`/api/v1/clusters/${cluster.id}/kubeconfig`}
+                    download={`${cluster.name}-kubeconfig.yaml`}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    Download kubeconfig
+                  </a>
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled
+                  title="The master must be running to fetch its kubeconfig"
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  Download kubeconfig
+                </Button>
+              )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -311,6 +341,7 @@ export function ClusterDetail() {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+            </div>
           </div>
         </div>
 
@@ -445,9 +476,15 @@ export function ClusterDetail() {
                     {node.message}
                   </TableCell>
                   <TableCell className="text-right">
-                    {node.role === "master" ? (
-                      <span className="text-muted-foreground">—</span>
-                    ) : (
+                    <div className="flex items-center justify-end gap-1">
+                    <NodeTerminalDialog
+                      clusterId={cluster.id}
+                      nodeId={node.id}
+                      nodeName={node.name}
+                      disabled={node.status !== "running"}
+                      disabledReason="The node must be running to open a terminal"
+                    />
+                    {node.role === "master" ? null : (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -485,6 +522,7 @@ export function ClusterDetail() {
                         </AlertDialogContent>
                       </AlertDialog>
                     )}
+                    </div>
                   </TableCell>
                 </TableRow>
               );

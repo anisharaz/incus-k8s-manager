@@ -538,6 +538,24 @@ the job progresses far enough to know them.
 > There is no `GET /api/v1/nodes/:id` (single node) yet — always fetch
 > nodes through this cluster-scoped list.
 
+### `GET /api/v1/clusters/:id/kubeconfig`
+
+Downloads the cluster's admin kubeconfig, read live from the master's
+`/root/.kube/config`. **Not the usual JSON envelope** — the response body
+*is* the kubeconfig YAML, with:
+- `Content-Type: application/yaml`
+- `Content-Disposition: attachment; filename="<cluster-name>-kubeconfig.yaml"`
+
+A plain `<a href="/api/v1/clusters/:id/kubeconfig" download>` works fine —
+the session cookie rides along automatically for a same-origin request, no
+extra auth header needed.
+
+**Errors:**
+- `401` — not logged in
+- `404` `"cluster not found"` — doesn't exist, or belongs to someone else
+- `409` `"master not running"` — wait for the cluster to finish provisioning
+- `500` — Incus error reading the file (e.g. the master's agent is down)
+
 ---
 
 ## Nodes (worker management)
@@ -683,6 +701,32 @@ confirmation the cluster is fully gone.
 - `404` `"cluster not found"` — doesn't exist, or belongs to someone else
 - `409` `"deletion in progress"` — a deletion job is already running for this cluster
 - `500` — database/job-creation error, or the cluster has no master row (shouldn't happen)
+
+### `GET /api/v1/clusters/:id/nodes/:nodeId/terminal`
+
+**WebSocket upgrade, not a normal REST call.** Opens an interactive `bash`
+shell (running as root) inside the node's VM — works for either role,
+master or worker. Auth/ownership/status checks happen on the initial
+upgrade request (same cookie-based session as everywhere else — a plain
+browser `new WebSocket(...)` carries it automatically), so a rejected
+check returns a normal HTTP error and the socket never upgrades:
+- `401` — not logged in
+- `404` — cluster or node not found (or either belongs to someone else)
+- `409` `"node not running"` — the node must be `running` to open a shell
+
+**Wire protocol**, once upgraded:
+- **Binary frames carry raw PTY bytes in both directions** — browser→server
+  is keystrokes/input, server→browser is terminal output. Write these
+  straight into/out of a terminal emulator (e.g. xterm.js) with no framing.
+- **Text frames are a small JSON control envelope**, currently only sent
+  browser→server: `{"type":"resize","cols":<int>,"rows":<int>}`, whenever
+  the terminal's size changes — including once right after connecting, to
+  correct the server's initial guessed PTY size (100x30).
+
+There's no server-side idle timeout — the session runs until the browser
+closes the socket (same lifetime model as SSH). No `result`/job/polling
+involved; this is a raw, long-lived connection, not an async-job-pattern
+endpoint.
 
 ---
 
