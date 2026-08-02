@@ -63,6 +63,8 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Get("/clusters/:id", requireAuth, clusterHandlers.GetCluster)
 	v1.Get("/clusters/:id/nodes", requireAuth, nodeHandlers.ListNodesForCluster)
 	v1.Post("/clusters/:id/nodes", requireAuth, nodeHandlers.CreateNode)
+	v1.Delete("/clusters/:id/nodes/:nodeId", requireAuth, nodeHandlers.DeleteNode)
+	v1.Delete("/clusters/:id", requireAuth, clusterHandlers.DeleteCluster)
 
 	// Root API endpoint
 	v1.Get("/", func(c fiber.Ctx) error {

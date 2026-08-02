@@ -135,6 +135,7 @@ type Cluster struct {
 	ID        string    `gorm:"primaryKey" json:"id"`
 	OwnerID   string    `gorm:"column:owner_id;index" json:"ownerId"`
 	NetworkID string    `gorm:"column:network_id;index" json:"networkId"`
+	JobID     *string   `gorm:"column:job_id" json:"jobId,omitempty"`
 	Name      string    `json:"name"`
 	CNI       string    `gorm:"column:cni;type:varchar(20)" json:"cni"`
 	Status    string    `gorm:"type:varchar(20)" json:"status"`

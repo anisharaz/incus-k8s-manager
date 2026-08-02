@@ -1,12 +1,25 @@
-import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
-import { ArrowLeft, ServerCog, AlertCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router";
+import { ArrowLeft, ServerCog, AlertCircle, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   Table,
   TableBody,
@@ -16,7 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AddNodeDialog } from "@/components/AddNodeDialog";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type {
   Cluster,
   ClusterNode,
@@ -46,13 +59,22 @@ const nodeStatusVariant: Record<
   deleting: "outline",
 };
 
+const jobTypeTitle: Record<string, string> = {
+  node_provision: "Creation Progress",
+  cluster_deletion: "Deletion Progress",
+  node_deletion: "Deletion Progress",
+};
+
 export function ClusterDetail() {
   const { clusterId } = useParams();
+  const navigate = useNavigate();
   const [cluster, setCluster] = useState<Cluster | null>(null);
   const [nodes, setNodes] = useState<ClusterNode[]>([]);
   const [nodeJobs, setNodeJobs] = useState<Record<string, Job>>({});
+  const [clusterJob, setClusterJob] = useState<Job | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastClusterStatus = useRef<ClusterStatus | null>(null);
 
   useEffect(() => {
     if (!clusterId) return;
@@ -68,17 +90,34 @@ export function ClusterDetail() {
           ),
         ]);
         if (!isMounted) return;
+        lastClusterStatus.current = clusterData.cluster.status;
         setCluster(clusterData.cluster);
         setNodes(nodesData.nodes ?? []);
 
-        // Only nodes still provisioning need their job polled for
-        // stage/progress — a finished node's outcome is fully captured by
-        // its own status/message already.
-        const creatingNodes = (nodesData.nodes ?? []).filter(
-          (n) => n.status === "creating",
+        if (
+          clusterData.cluster.jobId &&
+          clusterData.cluster.status === "deleting"
+        ) {
+          try {
+            const jobData = await api.get<{ job: Job }>(
+              `/api/v1/jobs/${clusterData.cluster.jobId}`,
+            );
+            if (isMounted) setClusterJob(jobData.job);
+          } catch {
+            // ignore — the progress card just won't update this tick
+          }
+        } else if (isMounted) {
+          setClusterJob(undefined);
+        }
+
+        // Only nodes still provisioning or being deleted need their job
+        // polled for stage/progress — a finished node's outcome is fully
+        // captured by its own status/message already.
+        const activeNodes = (nodesData.nodes ?? []).filter(
+          (n) => n.status === "creating" || n.status === "deleting",
         );
         const jobEntries = await Promise.all(
-          creatingNodes.map(async (node) => {
+          activeNodes.map(async (node) => {
             try {
               const jobData = await api.get<{ job: Job }>(
                 `/api/v1/jobs/${node.jobId}`,
@@ -99,6 +138,15 @@ export function ClusterDetail() {
         });
       } catch (err) {
         if (!isMounted) return;
+        if (
+          err instanceof ApiError &&
+          err.code === 404 &&
+          lastClusterStatus.current === "deleting"
+        ) {
+          toast.success("Cluster deleted");
+          navigate("/clusters");
+          return;
+        }
         setError(
           err instanceof Error ? err.message : "Failed to fetch cluster",
         );
@@ -113,7 +161,7 @@ export function ClusterDetail() {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [clusterId]);
+  }, [clusterId, navigate]);
 
   if (loading) {
     return (
@@ -150,7 +198,34 @@ export function ClusterDetail() {
 
   const master = nodes.find((n) => n.role === "master");
   const masterJob = master ? nodeJobs[master.id] : undefined;
-  const canAddWorker = cluster.status === "ready" && master?.status === "running";
+  const canAddWorker =
+    cluster.status === "ready" && master?.status === "running";
+  const isDeletingCluster = cluster.status === "deleting";
+  const activeJob = clusterJob ?? masterJob;
+
+  async function handleDeleteCluster() {
+    if (!cluster) return;
+    try {
+      await api.delete(`/api/v1/clusters/${cluster.id}`);
+      toast.success("Cluster deletion started");
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Failed to delete cluster",
+      );
+    }
+  }
+
+  async function handleDeleteNode(node: ClusterNode) {
+    if (!cluster) return;
+    try {
+      await api.delete(`/api/v1/clusters/${cluster.id}/nodes/${node.id}`);
+      toast.success(`Deleting "${node.name}" started`);
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Failed to delete node",
+      );
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -176,17 +251,48 @@ export function ClusterDetail() {
               Cluster ID: {cluster.id}
             </p>
           </div>
-          <div className="rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">
-            <p className="flex items-center gap-2 font-medium text-foreground">
-              Status:
-              <Badge
-                variant={clusterStatusVariant[cluster.status]}
-                className="capitalize"
-              >
-                {cluster.status}
-              </Badge>
-            </p>
-            {master?.ip && <p className="mt-1">Master IP: {master.ip}</p>}
+          <div className="flex flex-col items-start gap-3 md:items-end">
+            <div className="rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">
+              <p className="flex items-center gap-2 font-medium text-foreground">
+                Status:
+                <Badge
+                  variant={clusterStatusVariant[cluster.status]}
+                  className="capitalize"
+                >
+                  {cluster.status}
+                </Badge>
+              </p>
+              {master?.ip && <p className="mt-1">Master IP: {master.ip}</p>}
+            </div>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={isDeletingCluster}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete cluster
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Delete cluster "{cluster.name}"?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This destroys every node's VM, including the master. This
+                    can't be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleDeleteCluster}>
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </div>
 
@@ -211,23 +317,23 @@ export function ClusterDetail() {
         )}
       </section>
 
-      {masterJob && masterJob.status !== "succeeded" && (
+      {activeJob && activeJob.status !== "succeeded" && (
         <section className="rounded-3xl border bg-card p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-foreground mb-4">
-            Creation Progress
+            {jobTypeTitle[activeJob.type] ?? "Job Progress"}
           </h3>
 
           <div className="space-y-4">
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-medium text-muted-foreground">
-                  {masterJob.stage}
+                  {activeJob.stage}
                 </span>
                 <span className="text-sm font-medium text-foreground">
-                  {masterJob.progress}%
+                  {activeJob.progress}%
                 </span>
               </div>
-              <Progress value={masterJob.progress} />
+              <Progress value={activeJob.progress} />
             </div>
 
             <div>
@@ -235,7 +341,7 @@ export function ClusterDetail() {
                 Status
               </p>
               <p className="mt-1 text-sm text-foreground capitalize">
-                {masterJob.status}
+                {activeJob.status}
               </p>
             </div>
 
@@ -244,16 +350,16 @@ export function ClusterDetail() {
                 Message
               </p>
               <p className="mt-1 text-sm text-foreground">
-                {masterJob.message}
+                {activeJob.message}
               </p>
             </div>
 
-            {masterJob.error && (
+            {activeJob.error && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Provisioning failed</AlertTitle>
-                <AlertDescription className="whitespace-pre-wrap break-words">
-                  {masterJob.error}
+                <AlertTitle>Operation failed</AlertTitle>
+                <AlertDescription className="whitespace-pre-wrap wrap-break-word">
+                  {activeJob.error}
                 </AlertDescription>
               </Alert>
             )}
@@ -283,11 +389,15 @@ export function ClusterDetail() {
               <TableHead>Status</TableHead>
               <TableHead>IP</TableHead>
               <TableHead>Message</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {nodes.map((node) => {
               const job = nodeJobs[node.id];
+              const nodeBusy =
+                node.status === "creating" || node.status === "deleting";
+              const canDeleteNode = !nodeBusy && master?.status === "running";
               return (
                 <TableRow key={node.id}>
                   <TableCell className="font-medium">{node.name}</TableCell>
@@ -304,7 +414,7 @@ export function ClusterDetail() {
                       >
                         {node.status}
                       </Badge>
-                      {node.status === "creating" && job && (
+                      {nodeBusy && job && (
                         <span className="text-xs text-muted-foreground">
                           {job.stage} ({job.progress}%)
                         </span>
@@ -314,6 +424,48 @@ export function ClusterDetail() {
                   <TableCell>{node.ip || "—"}</TableCell>
                   <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
                     {node.message}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {node.role === "master" ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Delete node"
+                            disabled={!canDeleteNode}
+                            title={
+                              !canDeleteNode
+                                ? "The master must be running and the node must not already have an operation in progress"
+                                : undefined
+                            }
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Delete node "{node.name}"?
+                            </AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This drains the node and destroys its VM. This
+                              can't be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleDeleteNode(node)}
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
                   </TableCell>
                 </TableRow>
               );

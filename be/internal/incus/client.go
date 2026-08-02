@@ -7,6 +7,7 @@ package incus
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	incusclient "github.com/lxc/incus/v7/client"
@@ -116,10 +117,15 @@ func (c *Client) setState(ctx context.Context, name, action string, timeoutSecon
 	return nil
 }
 
-// Delete stops (forcefully, if needed) and deletes an instance.
+// Delete stops (forcefully, if needed) and deletes an instance. It's a
+// no-op if the instance is already gone, so retrying a failed deletion job
+// is safe even if some instances were already torn down.
 func (c *Client) Delete(ctx context.Context, name string) error {
 	instance, _, err := c.server.GetInstance(name)
 	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			return nil
+		}
 		return fmt.Errorf("get instance %q: %w", name, err)
 	}
 

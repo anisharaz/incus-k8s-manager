@@ -174,3 +174,98 @@ func (h *NodeHandlers) CreateNode(c fiber.Ctx) error {
 
 	return c.Status(fiber.StatusAccepted).JSON(models.NodeResponse{Node: node})
 }
+
+// DeleteNode deletes a single worker node: drains it, removes its Node API
+// object, resets kubeadm on it, then destroys its VM. The cluster keeps
+// running throughout. Deleting the master isn't supported here — delete
+// the whole cluster instead (see ClusterHandlers.DeleteCluster). The
+// cluster must belong to the authenticated user.
+func (h *NodeHandlers) DeleteNode(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+	clusterID := c.Params("id")
+	nodeID := c.Params("nodeId")
+
+	var cluster models.Cluster
+	if err := h.db.Where("id = ? AND owner_id = ?", clusterID, ownerID).First(&cluster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "cluster not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	var node models.Node
+	if err := h.db.Where("id = ? AND cluster_id = ?", nodeID, clusterID).First(&node).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "node not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	if node.Role == string(models.NodeRoleMaster) {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "cannot delete master",
+			Message: "deleting the master node isn't supported; delete the cluster instead",
+			Code:    fiber.StatusBadRequest,
+		})
+	}
+
+	if node.Status == string(models.NodeStatusCreating) || node.Status == string(models.NodeStatusDeleting) {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Error:   "operation in progress",
+			Message: "node has an operation already in progress",
+			Code:    fiber.StatusConflict,
+		})
+	}
+
+	var master models.Node
+	if err := h.db.Where("cluster_id = ? AND role = ?", clusterID, string(models.NodeRoleMaster)).First(&master).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: "cluster has no master node: " + err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	if master.Status != string(models.NodeStatusRunning) {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Error:   "master not running",
+			Message: "master node must be running to drain a worker before deleting it",
+			Code:    fiber.StatusConflict,
+		})
+	}
+
+	h.db.Model(&node).Updates(map[string]any{
+		"status":  string(models.NodeStatusDeleting),
+		"message": "Node deletion started",
+	})
+
+	job, err := h.manager.DeleteNodeJob(ownerID, node.ID, node.IncusName, master.IncusName)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "job creation error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+	h.db.Model(&node).Update("job_id", job.ID)
+
+	node.Status = string(models.NodeStatusDeleting)
+	node.JobID = &job.ID
+	return c.Status(fiber.StatusAccepted).JSON(models.NodeResponse{Node: node})
+}

@@ -237,6 +237,87 @@ func validateCNI(cni string) (string, error) {
 	return cni, nil
 }
 
+// DeleteCluster deletes an entire cluster: every node's VM plus the
+// cluster itself. This is the only way to remove a master — there is no
+// "delete master, keep cluster" operation. Runs in the background; the
+// cluster and every node are marked "deleting" immediately, and the
+// Cluster row (and its nodes, via cascade) disappears only once the job
+// succeeds. The cluster must belong to the authenticated user.
+func (h *ClusterHandlers) DeleteCluster(c fiber.Ctx) error {
+	ownerID := middleware.ClaimsFromContext(c).UserID
+	clusterID := c.Params("id")
+
+	var cluster models.Cluster
+	if err := h.db.Where("id = ? AND owner_id = ?", clusterID, ownerID).First(&cluster).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+				Error:   "not found",
+				Message: "cluster not found",
+				Code:    fiber.StatusNotFound,
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	if cluster.Status == string(models.ClusterStatusDeleting) {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Error:   "deletion in progress",
+			Message: "cluster deletion is already in progress",
+			Code:    fiber.StatusConflict,
+		})
+	}
+
+	var nodes []models.Node
+	if err := h.db.Where("cluster_id = ?", clusterID).Find(&nodes).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	var masterIncusName string
+	var workerIncusNames []string
+	for _, n := range nodes {
+		if n.Role == string(models.NodeRoleMaster) {
+			masterIncusName = n.IncusName
+		} else {
+			workerIncusNames = append(workerIncusNames, n.IncusName)
+		}
+	}
+	if masterIncusName == "" {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "database error",
+			Message: "cluster has no master node",
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
+	h.db.Model(&cluster).Updates(map[string]any{
+		"status":  string(models.ClusterStatusDeleting),
+		"message": "Cluster deletion started",
+	})
+	h.db.Model(&models.Node{}).Where("cluster_id = ?", clusterID).Update("status", string(models.NodeStatusDeleting))
+
+	job, err := h.manager.DeleteClusterJob(ownerID, clusterID, masterIncusName, workerIncusNames)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "job creation error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+	h.db.Model(&cluster).Update("job_id", job.ID)
+
+	cluster.Status = string(models.ClusterStatusDeleting)
+	cluster.JobID = &job.ID
+	return c.Status(fiber.StatusAccepted).JSON(models.ClusterResponse{Cluster: cluster})
+}
+
 // validateNodeSize applies the minimum to any unset field (cpu == 0 or
 // memory/disk == "") and rejects anything explicitly set below it.
 func validateNodeSize(cpu int, memory, disk string) (jobs.NodeSize, error) {

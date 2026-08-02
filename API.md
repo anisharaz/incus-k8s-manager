@@ -156,10 +156,10 @@ User
 ```ts
 UserRole             = "admin" | "user"
 ClusterNetworkStatus = "creating" | "ready" | "failed"
-ClusterStatus        = "creating" | "ready" | "failed" | "deleting"  // "deleting" is defined but not yet used by any endpoint
+ClusterStatus        = "creating" | "ready" | "failed" | "deleting"
 CNIType               = "cilium"  // the only implemented value today; more may be added later
 NodeRole              = "master" | "worker"
-NodeStatus            = "creating" | "running" | "stopped" | "failed" | "deleting"  // "stopped"/"deleting" defined but not yet used
+NodeStatus            = "creating" | "running" | "stopped" | "failed" | "deleting"  // "stopped" defined but not yet used
 JobStatus             = "queued" | "running" | "succeeded" | "failed"
 ```
 
@@ -455,7 +455,9 @@ its id (see Errors).
 
 Immediately follow up with `GET /api/v1/clusters/:id/nodes` to get the
 master node's `jobId` to poll (see below) — the create response itself
-doesn't include the node or job.
+doesn't include the node or job. `Cluster` also has its own `jobId` field
+(omitted/absent except while a `DELETE` is in progress — see below), not
+used for creation.
 
 When the master's job succeeds, a follow-up `GET /api/v1/clusters/:id` will
 show:
@@ -576,9 +578,10 @@ Same fields, same defaults/minimums/validation as cluster creation's
 ```
 
 `name` auto-increments per cluster: `worker-1`, `worker-2`, ... (based on a
-count of existing workers — if you build worker deletion later, note this
-numbering isn't collision-proof against gaps from deleted workers, though
-no delete endpoint exists yet so it's a non-issue today).
+count of existing workers — this numbering isn't collision-proof against
+gaps left by deleted workers, e.g. deleting `worker-1` and adding a new
+worker afterward produces a second `worker-1`; display names aren't
+required to be sequential or gap-free, just unique per cluster).
 
 Poll `GET /api/v1/jobs/:jobId`; on success the job's `message` becomes
 `"Node joined the cluster"` and the node's `status` becomes `"running"`.
@@ -591,9 +594,90 @@ Poll `GET /api/v1/jobs/:jobId`; on success the job's `message` becomes
 - `400` — `cpu`/`memory`/`disk` below minimum
 - `500` — database/job-creation error
 
-> There is no way to remove a worker yet (no `DELETE`). Deleting a
-> cluster/node (stopping and removing the underlying Incus VM, not just the
-> DB row) is unimplemented — don't build that UI yet either.
+### `DELETE /api/v1/clusters/:id/nodes/:nodeId`
+
+Deletes a single **worker** node; the rest of the cluster keeps running.
+Drains the node (`kubectl drain --ignore-daemonsets --delete-emptydir-data
+--force`) and removes its Node API object (both run against the master's
+kubeconfig), runs `kubeadm reset --force` on the worker itself, then
+deletes its VM. Same async-job pattern as creation — the node's `status`
+becomes `"deleting"` immediately, and the node row is removed from `GET
+.../nodes` only once the job succeeds.
+
+Deleting the **master** isn't supported through this endpoint — delete the
+whole cluster instead (see below).
+
+**Response `202`:**
+```json
+{
+  "node": {
+    "id": "d6da0b00-9b36-47e5-89e2-7a3904199423",
+    "clusterId": "c0150a11-3a9b-4a96-8182-aacae98c33fd",
+    "jobId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    "name": "worker-1",
+    "incusName": "worker-d6da0b009b36",
+    "role": "worker",
+    "status": "deleting",
+    "message": "Node deletion started",
+    "createdAt": "2026-08-02T03:09:28.180597522+05:30",
+    "updatedAt": "2026-08-02T03:11:02.180597522+05:30"
+  }
+}
+```
+
+Poll `GET /api/v1/jobs/:jobId` (`type: "node_deletion"`); on success the
+node row is gone entirely — a subsequent `GET .../nodes` simply won't list
+it anymore (there's no "deleted" status to observe).
+
+**Errors:**
+- `401` — not logged in
+- `404` — cluster or node not found (or either belongs to someone else)
+- `400` `"cannot delete master"` — delete the cluster instead
+- `409` `"operation in progress"` — the node is already `creating` or `deleting`
+- `409` `"master not running"` — the master must be up to drain the worker through it
+- `500` — database/job-creation error
+
+### `DELETE /api/v1/clusters/:id`
+
+Deletes the entire cluster: every node's VM, then the cluster itself. This
+is the **only** way to remove a master. No kubectl-graceful steps are run
+(the whole control plane is going away, so draining has no lasting
+benefit) — VMs are just torn down directly, fail-fast. The cluster and
+every node are marked `"deleting"` immediately; the `Cluster` row (and all
+its `Node` rows, cascaded) disappear only once the job succeeds — after
+that, `GET /api/v1/clusters/:id` returns `404`, which is the success
+signal to watch for.
+
+Works from any cluster state, including `"failed"` — retrying a failed
+deletion is safe (VM teardown is idempotent).
+
+**Response `202`:**
+```json
+{
+  "cluster": {
+    "id": "cba22032-aca2-4d1e-902f-289459c91961",
+    "ownerId": "2b9dc998-2c29-4aef-90af-58a938a3d013",
+    "networkId": "5c701cdc-496d-42aa-802c-fa065e2a83a0",
+    "jobId": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "name": "prod-cluster",
+    "cni": "cilium",
+    "status": "deleting",
+    "message": "Cluster deletion started",
+    "createdAt": "2026-08-02T01:43:41.23486713+05:30",
+    "updatedAt": "2026-08-02T03:12:00.23486713+05:30"
+  }
+}
+```
+
+Poll `GET /api/v1/jobs/:jobId` (`type: "cluster_deletion"`) until it
+succeeds, then treat a subsequent `404` on `GET /api/v1/clusters/:id` as
+confirmation the cluster is fully gone.
+
+**Errors:**
+- `401` — not logged in
+- `404` `"cluster not found"` — doesn't exist, or belongs to someone else
+- `409` `"deletion in progress"` — a deletion job is already running for this cluster
+- `500` — database/job-creation error, or the cluster has no master row (shouldn't happen)
 
 ---
 
@@ -647,8 +731,10 @@ On failure:
 Fine to put in a collapsible "details" section, not meant as the headline
 error message (use `message` for that).
 
-`type` is currently always `"node_provision"` (used for both master and
-worker provisioning — check `metadata.role` to distinguish which).
+`type` is one of `"node_provision"` (master or worker creation — check
+`metadata.role` to distinguish which), `"node_deletion"` (worker deletion —
+`metadata.nodeId`), or `"cluster_deletion"` (whole-cluster deletion —
+`metadata.clusterId`).
 
 **Errors:** `401` not logged in · `404` `"job not found"` — doesn't exist, or belongs to someone else.
 
@@ -684,6 +770,11 @@ and a message like `"memory: Invalid value: lots"`.
  7. POST /api/v1/clusters/:id/nodes           {} (or sizing overrides) → node.id, node.jobId (202)
  8. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
  9. GET  /api/v1/clusters/:id/nodes                                    → confirm the new worker's status: running
+10. DELETE /api/v1/clusters/:id/nodes/:nodeId (the worker)             → node.jobId (202, status: deleting)
+11. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
+12. DELETE /api/v1/clusters/:id                                        → cluster.jobId (202, status: deleting)
+13. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
+14. GET  /api/v1/clusters/:id                                          → 404 confirms the cluster is fully gone
 ```
 
 Steps 2–9 all run as whichever user is currently logged in (steps 1/1a are
@@ -699,11 +790,7 @@ straight from 0a to step 2).
   gets a `401` on their next request and must log in again. No "remember
   me" / refresh token yet.
 - No password reset / change-password / forgot-password flow.
-- No delete for Users, Clusters, or Nodes (only Cluster Networks support delete).
-- No CNI is installed on any cluster, so `kubectl get nodes` (if you ever
-  shell in) always shows every node as `NotReady`. There's no API surface
-  for this either way — it's an operational fact, not something the API
-  reports.
+- No delete for Users.
 - No pagination on any list endpoint — expect small counts for now.
 - Interrupted jobs (server restart mid-provisioning) are not recovered or
   retried — a job stuck in `"running"` after a backend restart is orphaned.

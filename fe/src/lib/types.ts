@@ -34,6 +34,7 @@ export interface Cluster {
   id: string;
   ownerId: string;
   networkId: string;
+  jobId?: string;
   name: string;
   cni: CNIType;
   status: ClusterStatus;
