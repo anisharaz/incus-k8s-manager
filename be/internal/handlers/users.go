@@ -2,16 +2,19 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/anisharaz/incus-k8s-manager/be/internal/models"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
-// UserHandlers handles user endpoints. There is no authentication yet —
-// users only exist to own cluster networks, clusters, and nodes.
+// UserHandlers handles user endpoints. These require an authenticated
+// admin (see routes.go) — regular users are created by the admin, not
+// self-registered.
 type UserHandlers struct {
 	db *gorm.DB
 }
@@ -21,7 +24,9 @@ func NewUserHandlers(db *gorm.DB) *UserHandlers {
 	return &UserHandlers{db: db}
 }
 
-// CreateUser creates a new user.
+// CreateUser creates a new regular user (role is always "user" here — the
+// one admin account is created exclusively via the bootstrap flow, see
+// AuthHandlers.RegisterAdmin).
 func (h *UserHandlers) CreateUser(c fiber.Ctx) error {
 	var req models.CreateUserRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -41,6 +46,14 @@ func (h *UserHandlers) CreateUser(c fiber.Ctx) error {
 		})
 	}
 
+	if len(req.Password) < minPasswordLength {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "validation error",
+			Message: fmt.Sprintf("password must be at least %d characters", minPasswordLength),
+			Code:    fiber.StatusBadRequest,
+		})
+	}
+
 	var count int64
 	h.db.Model(&models.User{}).Where("username = ?", req.Username).Count(&count)
 	if count > 0 {
@@ -51,9 +64,20 @@ func (h *UserHandlers) CreateUser(c fiber.Ctx) error {
 		})
 	}
 
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "internal error",
+			Message: err.Error(),
+			Code:    fiber.StatusInternalServerError,
+		})
+	}
+
 	user := models.User{
-		ID:       uuid.New().String(),
-		Username: req.Username,
+		ID:           uuid.New().String(),
+		Username:     req.Username,
+		PasswordHash: string(hash),
+		Role:         string(models.UserRoleUser),
 	}
 
 	if err := h.db.Create(&user).Error; err != nil {

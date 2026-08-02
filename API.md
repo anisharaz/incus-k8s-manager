@@ -5,12 +5,20 @@ frontend (`fe/`) codes against.
 
 - **Base URL (dev):** `http://localhost:8000` (`PORT` env var, see `be/.env.example`)
 - **Format:** all requests/responses are JSON (`Content-Type: application/json`)
-- **Auth:** none yet. Every resource is tied to a `User` (`ownerId`) purely
-  for ownership bookkeeping — there is no login, no session, no token. Any
-  client can act as any user by passing their `id`.
+- **Auth:** cookie-based session (see [Authentication](#authentication)
+  below). The app has exactly one **admin** (created once via a bootstrap
+  flow) and any number of regular **users** (created by the admin). Cluster
+  networks/clusters/nodes are still tied to a `User` via `ownerId` purely
+  for ownership bookkeeping — creating those resources doesn't yet check
+  that the caller *is* that owner (see Known gaps), but creating other
+  *users* now genuinely requires an authenticated admin session.
 - **CORS (dev):** `http://localhost:5173`, `http://localhost:8000`,
-  `http://localhost:3000` are allowed (`be/internal/middleware/cors.go`).
-  Vite's default port (5173) already works out of the box.
+  `http://localhost:3000` are allowed, with credentials
+  (`be/internal/middleware/cors.go`) — required for the session cookie to
+  be sent cross-origin. Vite's default port (5173) already works out of the
+  box. **The frontend must send `fetch(..., { credentials: "include" })`
+  (or the XHR/axios equivalent) on every request**, or the browser won't
+  attach the session cookie at all.
 
 ---
 
@@ -72,8 +80,10 @@ Status codes used throughout the API:
 | `200` | Success (GET) |
 | `201` | Created (resource fully created synchronously — Users, Cluster Networks) |
 | `202` | Accepted (resource row created, but a background job is still provisioning it — Clusters, Nodes) |
-| `204` | Success, no body (DELETE) |
+| `204` | Success, no body (DELETE, logout) |
 | `400` | Bad request body / validation failure — safe to show `message` next to the offending field |
+| `401` | Not logged in, or session cookie missing/invalid/expired — show the login screen, not a form error |
+| `403` | Logged in, but the account's role isn't allowed to do this (currently: non-admin hitting a `/users` endpoint) |
 | `404` | Resource not found |
 | `409` | Conflict — duplicate name, CIDR overlap, or an operation attempted in the wrong state (e.g. adding a worker before the master is ready) |
 | `500` | Server/database/Incus error. **Known gap:** an invalid `ownerId` or `networkId` that doesn't reference a real row currently surfaces here as a raw Postgres foreign-key-violation message, not a clean `400`/`404`. Validate that IDs came from a real prior API response before submitting. |
@@ -139,6 +149,7 @@ User
 ### Enums
 
 ```ts
+UserRole             = "admin" | "user"
 ClusterNetworkStatus = "creating" | "ready" | "failed"
 ClusterStatus        = "creating" | "ready" | "failed" | "deleting"  // "deleting" is defined but not yet used by any endpoint
 NodeRole              = "master" | "worker"
@@ -171,39 +182,125 @@ backend-ops diagnostic, not something to build UI around.
 
 ---
 
-## Users
+## Authentication
 
-No auth — see Conventions above. `ownerId` on Networks/Clusters must be a
-real user's `id`.
+Session is a JWT in an **HttpOnly cookie** (`auth_token`) — JavaScript
+cannot read it, and the browser attaches it automatically on requests to
+the API origin as long as `credentials: "include"` is set (see CORS note
+above). There is no bearer-token header to manage client-side; you never
+see the token value itself.
 
-### `POST /api/v1/users`
+Two roles: **admin** (exactly one, created once via bootstrap) and
+**user** (any number, created by the admin). `User.role` is `"admin"` or
+`"user"`.
+
+### First-run flow
+
+On app load, the frontend should:
+1. `GET /api/v1/auth/status` — if `adminCreated: false`, show a "create
+   the admin account" screen and call `POST /api/v1/auth/register-admin`.
+2. If `adminCreated: true`, show a normal login screen
+   (`POST /api/v1/auth/login`) — unless already logged in (see `/auth/me`
+   below), which happens if a valid session cookie is already present
+   (e.g. page refresh).
+
+### `GET /api/v1/auth/status`
+
+Public — no session needed. Poll/check this before deciding which screen
+to show; it's the only way to distinguish first-run from steady-state.
+
+**Response `200`:**
+```json
+{ "adminCreated": false }
+```
+
+### `POST /api/v1/auth/register-admin`
+
+Creates the app's **one** admin account and immediately logs it in (sets
+the session cookie) — no separate login call needed right after. **Only
+succeeds once**, ever; concurrent first-boot requests can't both win (the
+backend row-locks the bootstrap state during the check).
 
 **Request:**
 ```json
-{ "username": "alice" }
+{ "username": "admin", "password": "supersecret123" }
 ```
+- `username` — 1–63 chars.
+- `password` — **minimum 8 characters** (this minimum applies to every
+  account, admin or regular user).
 
-**Response `201`:**
+**Response `201`:** `{ "user": User }` (see the User shape under Users
+below — no password/hash ever appears in any response).
+
+**Errors:**
+- `400` — bad username length, or password under 8 characters
+- `409` `"already bootstrapped"` — an admin already exists; use `/auth/login` instead
+
+### `POST /api/v1/auth/login`
+
+**Request:** `{ "username": "...", "password": "..." }` (works for the admin or any regular user)
+
+**Response `200`:** `{ "user": User }`, session cookie set.
+
+**Errors:** `401` — wrong username *or* wrong password. **Deliberately
+the same error/message for both** ("invalid username or password") so a
+client can't use this endpoint to enumerate valid usernames.
+
+### `POST /api/v1/auth/logout`
+
+Clears the session cookie. **Response `204`**, no body. No error cases —
+safe to call even if not currently logged in.
+
+### `GET /api/v1/auth/me`
+
+Returns the currently authenticated user. Since the cookie is HttpOnly,
+**this is the only way the frontend can find out who's logged in** (e.g.
+on page load/refresh, to restore session state without asking the user to
+log in again).
+
+**Response `200`:** `{ "user": User }` · **`401`** if not logged in / session expired/invalid — treat this as "show the login screen," not as an error to surface to the user.
+
+---
+
+## Users
+
+Admin-only — every endpoint below requires an authenticated **admin**
+session (`401` if not logged in at all, `403` if logged in as a regular
+user). Regular users don't self-register; the admin creates them here.
+`ownerId` on Cluster Networks/Clusters must be a real user's `id` (any
+role).
+
+### User shape
+
 ```json
 {
-  "user": {
-    "id": "2b9dc998-2c29-4aef-90af-58a938a3d013",
-    "username": "alice",
-    "createdAt": "2026-08-02T01:28:58.841899082+05:30",
-    "updatedAt": "2026-08-02T01:28:58.841899082+05:30"
-  }
+  "id": "2b9dc998-2c29-4aef-90af-58a938a3d013",
+  "username": "alice",
+  "role": "user",
+  "createdAt": "2026-08-02T01:28:58.841899082+05:30",
+  "updatedAt": "2026-08-02T01:28:58.841899082+05:30"
 }
 ```
+(Never includes a password or password hash — that field is excluded from JSON entirely, server-side.)
 
-**Errors:** `400` empty/>63-char username · `409` username already taken.
+### `POST /api/v1/users`
+
+Creates a regular user (`role` is always `"user"` — the one admin account
+only ever comes from `/auth/register-admin`).
+
+**Request:** `{ "username": "...", "password": "..." }` (same length/password rules as registering the admin)
+
+**Response `201`:** `{ "user": User }`
+
+**Errors:** `401` not logged in · `403` logged in but not admin · `400` bad username/password · `409` username taken.
 
 ### `GET /api/v1/users`
 
-**Response `200`:** `{ "users": [ User, ... ] }` (newest first)
+**Response `200`:** `{ "users": [ User, ... ] }` (newest first) · `401`/`403` as above.
 
 ### `GET /api/v1/users/:id`
 
-**Response `200`:** `{ "user": User }` · **`404`** if not found.
+**Response `200`:** `{ "user": User }` · `404` not found · `401`/`403` as above.
 
 > There is currently no `DELETE /api/v1/users/:id` — deliberately removed.
 > Deleting users (and cascading to their owned resources, including live
@@ -551,22 +648,37 @@ and a message like `"memory: Invalid value: lots"`.
 ## Example: full create-cluster-with-worker flow
 
 ```
-1. POST /api/v1/users                        {username}              → user.id
-2. POST /api/v1/networks                     {ownerId, name, cidr}   → network.id
-3. POST /api/v1/clusters                     {ownerId, networkId, name} → cluster.id (202, status: creating)
-4. GET  /api/v1/clusters/:id/nodes                                    → nodes[0].jobId (the master)
-5. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
-6. GET  /api/v1/clusters/:id                                          → confirm status: ready
-7. POST /api/v1/clusters/:id/nodes           {} (or sizing overrides) → node.id, node.jobId (202)
-8. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
-9. GET  /api/v1/clusters/:id/nodes                                    → confirm the new worker's status: running
+ 0. GET  /api/v1/auth/status                                           → adminCreated
+ 0a. (first run) POST /api/v1/auth/register-admin  {username, password} → logged in as admin
+ 0b. (steady state) POST /api/v1/auth/login         {username, password} → logged in
+ 1. POST /api/v1/users                        {username, password}    → user.id  (admin session required)
+ 2. POST /api/v1/networks                     {ownerId, name, cidr}   → network.id
+ 3. POST /api/v1/clusters                     {ownerId, networkId, name} → cluster.id (202, status: creating)
+ 4. GET  /api/v1/clusters/:id/nodes                                    → nodes[0].jobId (the master)
+ 5. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
+ 6. GET  /api/v1/clusters/:id                                          → confirm status: ready
+ 7. POST /api/v1/clusters/:id/nodes           {} (or sizing overrides) → node.id, node.jobId (202)
+ 8. poll GET /api/v1/jobs/:jobId  until status is succeeded|failed
+ 9. GET  /api/v1/clusters/:id/nodes                                    → confirm the new worker's status: running
 ```
+
+Steps 2–9 are otherwise unauthenticated in this version (see Known gaps) —
+only step 1 (creating a `User`) actually enforces the admin session today.
 
 ---
 
 ## Known gaps (don't build UI expecting these yet)
 
-- No authentication — `ownerId` is a bare, unvalidated-at-the-boundary UUID.
+- **Auth covers login/logout/session and who-can-create-users — nothing
+  else yet.** Creating/reading/deleting Cluster Networks, Clusters, and
+  Nodes doesn't check the caller's session at all; `ownerId` is a bare,
+  unvalidated-at-the-boundary UUID accepted at face value. Don't assume a
+  logged-in *regular* user is actually restricted to their own resources —
+  that enforcement doesn't exist yet.
+- Session TTL is 24h with no refresh — a user logged in for a full day
+  gets a `401` on their next request and must log in again. No "remember
+  me" / refresh token yet.
+- No password reset / change-password / forgot-password flow.
 - No delete for Users, Clusters, or Nodes (only Cluster Networks support delete).
 - No CNI is installed on any cluster, so `kubectl get nodes` (if you ever
   shell in) always shows every node as `NotReady`. There's no API surface

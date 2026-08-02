@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"log"
 	"os"
 )
 
@@ -15,13 +17,19 @@ type Config struct {
 	DBPort          string
 	DBName          string
 	IncusSocketPath string
+	JWTSecret       []byte
+	// CookieSecure sets the session cookie's Secure attribute (HTTPS-only).
+	// True whenever ENV=production; local dev over plain HTTP needs it false.
+	CookieSecure bool
 }
 
 // NewConfig creates a new configuration instance
 func NewConfig() *Config {
+	env := getEnv("ENV", "development")
+
 	return &Config{
 		Port:   getEnv("PORT", "8000"),
-		Env:    getEnv("ENV", "development"),
+		Env:    env,
 		DBUrl:  getEnv("DATABASE_URL", ""),
 		DBUser: getEnv("DB_USER", "postgres"),
 		DBPass: getEnv("DB_PASSWORD", "postgres"),
@@ -31,7 +39,28 @@ func NewConfig() *Config {
 		// Path to the Incus unix socket shared by the incus container (see
 		// meta/incusDocker/docker-compose.yml's incus-socket-share volume).
 		IncusSocketPath: getEnv("INCUS_SOCKET_PATH", "/shared-socket/incus.sock"),
+		JWTSecret:       loadJWTSecret(),
+		CookieSecure:    env == "production",
 	}
+}
+
+// loadJWTSecret reads JWT_SECRET, or generates a random one if unset. A
+// generated secret means every session is invalidated on restart — fine
+// for now, but set JWT_SECRET in any deployment that should survive one.
+func loadJWTSecret() []byte {
+	if secret := getEnv("JWT_SECRET", ""); secret != "" {
+		return []byte(secret)
+	}
+
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		log.Fatalf("failed to generate a JWT secret: %v", err)
+	}
+
+	log.Println("WARNING: JWT_SECRET not set — generated a random one for this run. " +
+		"All sessions will be invalidated on restart. Set JWT_SECRET in any persistent deployment.")
+
+	return secret
 }
 
 // GetDatabaseDSN returns the PostgreSQL connection string

@@ -35,7 +35,7 @@ func main() {
 	jobManager := jobs.NewManager(db, incusClient)
 
 	// Setup all routes
-	routes.SetupRoutes(app, jobManager, db, incusClient)
+	routes.SetupRoutes(app, jobManager, db, incusClient, cfg)
 
 	// Start server
 	log.Printf("Starting server on :%s\n", cfg.Port)

@@ -7,18 +7,37 @@ type StatusResponse struct {
 	Status map[string]string `json:"status"`
 }
 
-// User owns cluster networks, clusters, and nodes. There is no
-// authentication yet — this only tracks resource ownership.
+// UserRole is a simple two-role model: exactly one admin (created via the
+// bootstrap flow) plus any number of regular users (created by the admin).
+type UserRole string
+
+const (
+	UserRoleAdmin UserRole = "admin"
+	UserRoleUser  UserRole = "user"
+)
+
+// User owns cluster networks, clusters, and nodes, and authenticates via
+// username/password. PasswordHash is never serialized (json:"-").
 type User struct {
-	ID        string    `gorm:"primaryKey" json:"id"`
-	Username  string    `gorm:"uniqueIndex" json:"username"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID           string    `gorm:"primaryKey" json:"id"`
+	Username     string    `gorm:"uniqueIndex" json:"username"`
+	PasswordHash string    `gorm:"column:password_hash" json:"-"`
+	Role         string    `gorm:"type:varchar(10)" json:"role"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
-// CreateUserRequest represents the request to create a user.
+// CreateUserRequest represents the request to create a user — used both
+// for admin bootstrap and for an admin creating a regular user.
 type CreateUserRequest struct {
 	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// LoginRequest represents a login attempt.
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // UserResponse wraps a single user.
@@ -29,6 +48,19 @@ type UserResponse struct {
 // UserListResponse wraps a list of users.
 type UserListResponse struct {
 	Users []User `json:"users"`
+}
+
+// AppState is a singleton row (id is always 1) tracking app-wide bootstrap
+// state.
+type AppState struct {
+	ID           int  `gorm:"primaryKey" json:"-"`
+	AdminCreated bool `gorm:"column:admin_created" json:"adminCreated"`
+}
+
+// BootstrapStatusResponse tells the frontend whether to show "register
+// admin" (first boot) or a normal login screen.
+type BootstrapStatusResponse struct {
+	AdminCreated bool `json:"adminCreated"`
 }
 
 // ClusterNetworkStatus represents the state of a cluster network.

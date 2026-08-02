@@ -116,13 +116,27 @@ be/
 - **GET** `/api/v1/jobs` - List all background jobs
 - **GET** `/api/v1/jobs/:id` - Get a single job (status, progress, result)
 
+### Authentication
+
+Cookie-based session (JWT in an HttpOnly cookie, see `internal/auth` and
+`internal/middleware/auth.go`). Exactly one **admin**, created once via a
+bootstrap flow tracked in the `app_states` singleton row; any number of
+regular **users**, created by the admin. See `API.md` for the full flow.
+
+- **GET** `/api/v1/auth/status` - `{"adminCreated": bool}` — public
+- **POST** `/api/v1/auth/register-admin` - Bootstrap the one admin account (works once), logs it in
+- **POST** `/api/v1/auth/login` - `{"username", "password"}` — any role
+- **POST** `/api/v1/auth/logout` - Clears the session cookie
+- **GET** `/api/v1/auth/me` - Currently authenticated user (session required)
+
 ### Users
 
-No authentication yet — a user only exists to own cluster networks,
-clusters, and nodes. `ownerId` on the endpoints below must reference a real
-user (violations surface as a raw FK-violation 500 for now).
+Admin-only (`401` not logged in, `403` logged in as a non-admin). `ownerId`
+on cluster networks/clusters below must reference a real user of either
+role (violations surface as a raw FK-violation 500 for now — see `API.md`'s
+Known Gaps).
 
-- **POST** `/api/v1/users` - Create a user (`{"username": "..."}`)
+- **POST** `/api/v1/users` - Create a regular user (`{"username", "password"}`, password ≥8 chars)
 - **GET** `/api/v1/users` - List all users
 - **GET** `/api/v1/users/:id` - Get a single user
 
@@ -241,6 +255,7 @@ Environment variables can be set via `.env` file or system environment:
 - `DATABASE_URL` - Postgres connection string, e.g. `postgres://postgres:postgres@localhost:5432/incus_k8s_manager?sslmode=disable`. Used by both the app and the migrate CLI.
 - `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` - Fallback DB settings used to build the DSN when `DATABASE_URL` is not set.
 - `INCUS_SOCKET_PATH` - Path to the Incus unix socket (default: `/shared-socket/incus.sock`). Empty falls back to `$INCUS_SOCKET`/`$INCUS_DIR`/standard system paths.
+- `JWT_SECRET` - Signing key for session tokens. If unset, a random one is generated at startup (logged as a warning) — fine for a dev box, but every restart invalidates all sessions. Set this in any deployment that should survive a restart.
 
 ## Dependencies
 
@@ -248,10 +263,12 @@ Environment variables can be set via `.env` file or system environment:
 - `github.com/gofiber/schema` - Request validation
 - `github.com/google/uuid` - UUID generation
 - `github.com/lxc/incus/v7` - Incus Go SDK (instance lifecycle, exec, networks)
+- `github.com/golang-jwt/jwt/v5` - Session tokens
+- `golang.org/x/crypto/bcrypt` - Password hashing
 
 ## Notes
 
-- The API is configured to allow requests from `localhost:5173` and `localhost:8000`
+- The API is configured to allow requests from `localhost:5173` and `localhost:8000`, with credentials (cookies) enabled
 - Modify CORS settings in `internal/middleware/cors.go` as needed
 - Incus status checks require the Incus CLI to be installed and accessible
 

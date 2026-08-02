@@ -27,5 +27,11 @@ func CORSMiddleware() fiber.Handler {
 			"PATCH",
 			"OPTIONS",
 		},
+		// The session is a cookie (see internal/middleware/auth.go), which
+		// browsers only attach to cross-origin requests when the request
+		// opts in (fetch credentials: "include") AND the server allows it
+		// here. Requires an explicit origin list above — incompatible with
+		// AllowOrigins: ["*"].
+		AllowCredentials: true,
 	})
 }

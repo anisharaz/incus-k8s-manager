@@ -4,8 +4,10 @@ go 1.26.4
 
 require (
 	github.com/gofiber/fiber/v3 v3.3.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/lxc/incus/v7 v7.3.0
+	golang.org/x/crypto v0.54.0
 	gorm.io/driver/postgres v1.5.7
 	gorm.io/gorm v1.25.7
 )
@@ -66,7 +68,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect

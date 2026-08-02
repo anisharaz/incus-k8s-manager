@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"github.com/anisharaz/incus-k8s-manager/be/internal/config"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/handlers"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/incus"
 	"github.com/anisharaz/incus-k8s-manager/be/internal/jobs"
@@ -10,12 +11,14 @@ import (
 )
 
 // SetupRoutes initializes all application routes
-func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusClient *incus.Client) {
+func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusClient *incus.Client, cfg *config.Config) {
 	taskHandlers := handlers.NewTaskHandlers(jobManager)
 	networkHandlers := handlers.NewNetworkHandlers(db, incusClient)
 	userHandlers := handlers.NewUserHandlers(db)
 	clusterHandlers := handlers.NewClusterHandlers(db, jobManager)
 	nodeHandlers := handlers.NewNodeHandlers(db, jobManager)
+	authHandlers := handlers.NewAuthHandlers(db, cfg.JWTSecret, cfg.CookieSecure)
+	requireAuth := middleware.RequireAuth(cfg.JWTSecret)
 
 	// Apply global middleware
 	app.Use(middleware.LoggerMiddleware())
@@ -32,10 +35,21 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	v1.Get("/jobs", taskHandlers.ListJobs)
 	v1.Get("/jobs/:id", taskHandlers.GetJob)
 
-	// User routes
-	v1.Post("/users", userHandlers.CreateUser)
-	v1.Get("/users", userHandlers.ListUsers)
-	v1.Get("/users/:id", userHandlers.GetUser)
+	// Auth routes. BootstrapStatus/RegisterAdmin/Login are necessarily
+	// public (there's no session before you have one); Me/Logout require
+	// an existing session.
+	v1.Get("/auth/status", authHandlers.BootstrapStatus)
+	v1.Post("/auth/register-admin", authHandlers.RegisterAdmin)
+	v1.Post("/auth/login", authHandlers.Login)
+	v1.Post("/auth/logout", authHandlers.Logout)
+	v1.Get("/auth/me", requireAuth, authHandlers.Me)
+
+	// User routes — admin-only (regular users are created by the admin,
+	// not self-registered; see AuthHandlers.RegisterAdmin for the one
+	// exception, the bootstrap admin itself).
+	v1.Post("/users", requireAuth, middleware.RequireAdmin, userHandlers.CreateUser)
+	v1.Get("/users", requireAuth, middleware.RequireAdmin, userHandlers.ListUsers)
+	v1.Get("/users/:id", requireAuth, middleware.RequireAdmin, userHandlers.GetUser)
 
 	// Cluster network routes
 	v1.Post("/networks", networkHandlers.CreateNetwork)
