@@ -21,7 +21,7 @@ export function Header() {
     <header className="border-b bg-background">
       <div className="container mx-auto flex items-center justify-between px-4 py-4">
         <h1 className="text-2xl font-bold text-foreground">
-          Incus K8s Manager
+          KOI <span className="text-base font-normal text-muted-foreground">— Kubernetes on Incus</span>
         </h1>
 
         <div className="flex items-center gap-6">

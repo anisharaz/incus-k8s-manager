@@ -1,6 +1,6 @@
 # API Reference
 
-REST API for the Incus K8s Manager backend (`be/`). This is the contract the
+REST API for the KOI (Kubernetes on Incus) backend (`be/`). This is the contract the
 frontend (`fe/`) codes against.
 
 - **Base URL (dev):** `http://localhost:8000` (`PORT` env var, see `be/.env.example`)

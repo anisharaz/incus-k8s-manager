@@ -1,4 +1,4 @@
-# Incus Container Image (kii)
+# Incus Container Image (KOI)
 
 This folder contains everything needed to build a containerized [Incus](https://linuxcontainers.org/incus/) server based on `debian:bookworm-slim`. The image runs `incusd` inside a Docker/Podman container and exposes the Incus REST API over HTTPS on port **8443**.
 
@@ -9,16 +9,16 @@ This folder contains everything needed to build a containerized [Incus](https://
 | `Dockerfile`              | Builds the image, installs Incus + dependencies, copies `entrypoint.sh`, the preseed config, and bakes in the prebuilt k8s VM image (`incus.tar.xz` + `disk.qcow2`). |
 | `entrypoint.sh`           | Entrypoint: starts `lxcfs`, `udevd`, `incusd`, then runs the preseed **and imports the k8s VM image** on first start (tracked by a marker in `/var/lib/incus`).      |
 | `incus_admin_config.yaml` | Admin config: HTTPS on `:8443`, `default` dir pool, `clustermanagerbr0` bridge (NAT), default profile + project.                                                     |
-| `run.sh`                  | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, runs the container in the host netns and waits for it to become healthy.                                 |
-| `docker-compose.yml`      | Compose definition mirroring the `run.sh` options (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume).                       |
-| `build.sh`                | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.               |
+| `run_app.sh`              | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, writes `.env`, and runs `docker compose up -d --wait` for the whole stack (`incus`, `postgres`, `app`). |
+| `docker-compose.yml`      | Compose definition for the full stack: `incus` (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume), `postgres`, and `app`.   |
+| `build_docker_image.sh`   | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.               |
 | `incusStuff/`             | Source folder for the k8s VM image: `incus_distrobuilder.yaml` (distrobuilder config) plus the built `incus.tar.xz` + `disk.qcow2`.                                  |
 
 ---
 
 ## Building the Image
 
-The image is built with `build.sh`, which:
+The image is built with `build_docker_image.sh`, which:
 
 1. Checks that `distrobuilder` is installed (only needed if the VM image is missing).
 2. Ensures `incusStuff/incus.tar.xz` and `incusStuff/disk.qcow2` exist — if not, runs:
@@ -27,58 +27,45 @@ The image is built with `build.sh`, which:
    ```
    (this produces the prebuilt Ubuntu + Kubernetes VM image).
 3. Stages the two files into `images/` (the docker build context).
-4. Runs `docker build -t anisharaz/kii:latest .`
+4. Runs `docker build -t aaraz/koivmrunner:latest .`
 
 ```bash
 # From the meta/incusDocker directory
 cd meta/incusDocker
 
-./build.sh                       # ensure VM image, then build
-./build.sh --no-cache            # bypass docker build cache
-IMAGE_NAME=anisharaz/kii:v1.0.0 ./build.sh   # custom tag
+./build_docker_image.sh                       # ensure VM image, then build
+./build_docker_image.sh --no-cache            # bypass docker build cache
+IMAGE_NAME=aaraz/koivmrunner:v1.0.0 ./build_docker_image.sh   # custom tag
 ```
 
-> **Note:** the build context is the `meta/incusDocker` folder, so `entrypoint.sh`, `incus-preseed.yaml`, and the staged `images/` (`incus.tar.xz` + `disk.qcow2`) are picked up automatically by the `COPY` instructions in the `Dockerfile`.
+> **Note:** the build context is the `meta/incusDocker` folder, so `entrypoint.sh`, `incus-preseed.yaml`, and the staged VM image files (`incus.tar.xz` + `disk.qcow2`, staged into a temp dir by `build_docker_image.sh`) are picked up automatically by the `COPY` instructions in the `Dockerfile`.
 
 If you already have `incus.tar.xz` and `disk.qcow2` in `incusStuff/`, you can also build directly:
 
 ```bash
-# Requires images/ already staged (build.sh does this automatically)
-docker build -t anisharaz/kii:latest .
+# Requires the VM image files already staged (build_docker_image.sh does this automatically)
+docker build -t aaraz/koivmrunner:latest .
 
 # Build with a different tag
-docker build -t anisharaz/kii:v1.0.0 .
+docker build -t aaraz/koivmrunner:v1.0.0 .
 ```
 
 ---
 
-## Quick Start: `run.sh` Helper Script
+## Quick Start: `run_app.sh` Helper Script
 
-`run.sh` automates the whole flow for you — it:
+`run_app.sh` automates the whole stack (`incus` + `postgres` + `app`) for you — it:
 
-1. Checks that Docker is installed and the daemon is accessible.
-2. Checks whether the host supports KVM (and that `/dev/kvm` is usable).
-3. Resolves the host's `kvm` group GID automatically (`KVM_GID`).
-4. Runs the container in the **host** network namespace.
-5. Pulls the image from Docker Hub (`anisharaz/kii:latest`) if it isn't already present.
-6. Waits until the container reports `healthy`.
-
-> No Dockerfile or source files are needed on the user's machine — `run.sh` is self-contained and just fetches the prebuilt image from the registry.
+1. Checks that Docker (or `docker-compose`) is installed and the daemon is accessible.
+2. Checks that `/dev/kvm` is available, and warns if virtualization extensions aren't detected.
+3. Resolves the host's `kvm` group GID automatically and writes it into `.env`.
+4. Runs `docker compose up -d --wait` (with a 5-minute timeout for the stack to report healthy).
 
 ```bash
-./run.sh                 # run in the host network namespace
-./run.sh --name incus --image anisharaz/kii:latest
+./run_app.sh
 ```
 
-CLI options:
-
-| Option       | Description                                              |
-| ------------ | -------------------------------------------------------- |
-| `--name`     | Container name (default: `incus`).                       |
-| `--image`    | Image tag to pull/run (default: `anisharaz/kii:latest`). |
-| `-h, --help` | Show usage.                                              |
-
-> To run through **docker compose** instead, set `USE_COMPOSE=true` at the top of `run.sh` (or run `docker compose up -d` directly — see the next section). When `USE_COMPOSE=true`, `run.sh` exports the resolved `KVM_GID`/`SETIPTABLES` so the compose file picks them up.
+No flags — it always drives the `docker-compose.yml` in this directory as-is. For anything more targeted (pulling/running just the Incus image standalone, a custom container name), use `docker compose`/`docker run` directly — see the next two sections.
 
 ---
 
@@ -162,7 +149,7 @@ docker run -d \
   -e KVM_GID=<your_kvm_gid> \
   -v /dev:/dev \
   -v /lib/modules:/lib/modules:ro \
-  anisharaz/kii:latest
+  aaraz/koivmrunner:latest
 ```
 
 ### Environment Variables
@@ -205,7 +192,7 @@ docker run -d \
   -e KVM_GID="$KVM_GID" \
   -v /dev:/dev \
   -v /lib/modules:/lib/modules:ro \
-  anisharaz/kii:latest
+  aaraz/koivmrunner:latest
 ```
 
 > If you don't plan to run VMs (only containers), you can omit `KVM_GID` entirely.

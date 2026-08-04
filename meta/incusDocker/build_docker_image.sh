@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# build.sh — Build the KII (Incus) container image, baking in the
-# prebuilt k8s VM image (incus.tar.xz + disk.qcow2).
+# build_docker_image.sh — Build the KOI VM runner (Incus) container image,
+# baking in the prebuilt k8s VM image (incus.tar.xz + disk.qcow2).
 #
 #   1. Checks that distrobuilder is available (only needed if the VM
 #      image files are missing).
@@ -10,12 +10,12 @@
 #        sudo distrobuilder build-incus incus_distrobuilder.yaml --vm .
 #   3. Stages the VM image files into a temp dir (/tmp), exposed to docker
 #      as the "vmimage" named build context, and deleted after the build.
-#   4. Runs `docker build` to produce anisharaz/kii:latest.
+#   4. Runs `docker build` to produce aaraz/koivmrunner:latest.
 #
 # Usage:
-#   ./build.sh
-#   IMAGE_NAME=anisharaz/kii:v1.0.0 ./build.sh
-#   ./build.sh --no-cache
+#   ./build_docker_image.sh
+#   IMAGE_NAME=aaraz/koivmrunner:v1.0.0 ./build_docker_image.sh
+#   ./build_docker_image.sh --no-cache
 #
 set -euo pipefail
 
@@ -26,11 +26,11 @@ DISTRO_YAML="$VM_DIR/incus_distrobuilder.yaml"
 VM_TAR="$VM_DIR/incus.tar.xz"
 VM_DISK="$VM_DIR/disk.qcow2"
 
-IMAGE_NAME="${IMAGE_NAME:-aaraz/kiivmrunner:latest}"
+IMAGE_NAME="${IMAGE_NAME:-aaraz/koivmrunner:latest}"
 BUILD_CONTEXT="$SCRIPT_DIR"          # meta/incusDocker
 # Temp staging dir for the VM image files; passed to docker as the
 # "vmimage" named build context and removed automatically on exit.
-STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kii-vm.XXXXXX")"
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/koi-vm.XXXXXX")"
 
 cleanup() { rm -rf "$STAGE_DIR"; }
 trap cleanup EXIT

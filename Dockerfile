@@ -12,11 +12,11 @@ COPY be/go.mod be/go.sum ./
 RUN go mod download
 COPY be/ ./
 COPY --from=frontend /src/fe/dist ./internal/webui/dist
-RUN CGO_ENABLED=0 go build -o /out/incus-k8s-manager ./cmd/server
+RUN CGO_ENABLED=0 go build -o /out/koi ./cmd/server
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=backend /out/incus-k8s-manager /usr/local/bin/incus-k8s-manager
+COPY --from=backend /out/koi /usr/local/bin/koi
 EXPOSE 8000
-ENTRYPOINT ["/usr/local/bin/incus-k8s-manager"]
+ENTRYPOINT ["/usr/local/bin/koi"]

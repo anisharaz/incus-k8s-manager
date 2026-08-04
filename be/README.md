@@ -1,4 +1,4 @@
-# Incus K8s Manager - Backend
+# KOI Backend
 
 A Fiber-based REST API for managing Incus containers and Kubernetes integration, with a database-backed background job manager.
 
@@ -242,7 +242,7 @@ This will automatically rebuild and restart the server when you save files.
 make build
 ```
 
-The binary will be created in `bin/incus-k8s-manager`.
+The binary will be created in `bin/koi`.
 
 ## Configuration
 

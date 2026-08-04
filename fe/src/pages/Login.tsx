@@ -63,9 +63,9 @@ export function Login() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Zap className="h-6 w-6 text-blue-600" />
-            <CardTitle className="text-xl">Incus Manager</CardTitle>
+            <CardTitle className="text-xl">KOI</CardTitle>
           </div>
-          <CardDescription>Log in to continue.</CardDescription>
+          <CardDescription>Kubernetes on Incus. Log in to continue.</CardDescription>
         </CardHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)}>

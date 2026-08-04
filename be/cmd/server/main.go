@@ -37,7 +37,7 @@ func main() {
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
-		AppName: "Incus K8s Manager API",
+		AppName: "KOI API",
 	})
 
 	jobManager := jobs.NewManager(db, incusClient)

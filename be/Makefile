@@ -1,7 +1,7 @@
 .PHONY: build run dev test clean fmt lint help migrate-up migrate-down migrate-create
 
 # Variables
-BINARY_NAME=incus-k8s-manager
+BINARY_NAME=koi
 MAIN_PATH=./cmd/server/main.go
 MIGRATE_PATH=db/migrations
 

@@ -77,7 +77,7 @@ func SetupRoutes(app *fiber.App, jobManager *jobs.Manager, db *gorm.DB, incusCli
 	// Root API endpoint
 	v1.Get("/", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"message": "Incus K8s Manager API v1",
+			"message": "KOI API v1",
 			"version": "1.0.0",
 		})
 	})

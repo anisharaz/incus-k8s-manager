@@ -1,4 +1,4 @@
-# incus-k8s-manager
+# KOI — Kubernetes on Incus
 
 **Spin up real Kubernetes clusters on [Incus](https://linuxcontainers.org/incus/) VMs from a web UI — no `kubeadm` babysitting, no manual CNI installs, no SSH-ing around to check on things.**
 

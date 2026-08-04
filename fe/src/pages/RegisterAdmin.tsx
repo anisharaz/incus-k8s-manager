@@ -72,7 +72,7 @@ export function RegisterAdmin() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Zap className="h-6 w-6 text-blue-600" />
-            <CardTitle className="text-xl">Incus Manager</CardTitle>
+            <CardTitle className="text-xl">KOI</CardTitle>
           </div>
           <CardDescription>
             Create the administrator account to finish setting up this
