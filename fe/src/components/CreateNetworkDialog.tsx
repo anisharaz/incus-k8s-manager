@@ -104,12 +104,12 @@ export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
           Create Network
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-106.25">
         <DialogHeader>
           <DialogTitle>Create Cluster Network</DialogTitle>
           <DialogDescription>
-            Creates an Incus bridge network that clusters can be launched
-            onto. By default Incus picks an unused subnet automatically.
+            Creates an Incus bridge network that clusters can be launched onto.
+            By default Incus picks an unused subnet automatically.
           </DialogDescription>
         </DialogHeader>
 
@@ -168,8 +168,8 @@ export function CreateNetworkDialog({ onSuccess }: CreateNetworkDialogProps) {
                       />
                     </FormControl>
                     <FormDescription>
-                      An IPv4 network address (no host bits), prefix between
-                      /8 and /29.
+                      An IPv4 network address (no host bits), prefix between /8
+                      and /29.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

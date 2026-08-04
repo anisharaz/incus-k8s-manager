@@ -116,17 +116,14 @@ export function CreateClusterDialog({ onSuccess }: CreateClusterDialogProps) {
   async function onSubmit(values: FormValues) {
     setIsLoading(true);
     try {
-      const result = await api.post<{ cluster: Cluster }>(
-        "/api/v1/clusters",
-        {
-          networkId: values.networkId,
-          name: values.name,
-          cni: values.cni,
-          ...(values.cpu ? { cpu: Number(values.cpu) } : {}),
-          ...(values.memory ? { memory: values.memory } : {}),
-          ...(values.disk ? { disk: values.disk } : {}),
-        },
-      );
+      const result = await api.post<{ cluster: Cluster }>("/api/v1/clusters", {
+        networkId: values.networkId,
+        name: values.name,
+        cni: values.cni,
+        ...(values.cpu ? { cpu: Number(values.cpu) } : {}),
+        ...(values.memory ? { memory: values.memory } : {}),
+        ...(values.disk ? { disk: values.disk } : {}),
+      });
       setOpen(false);
       form.reset();
       onSuccess?.();
@@ -160,12 +157,12 @@ export function CreateClusterDialog({ onSuccess }: CreateClusterDialogProps) {
           Create Cluster
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-106.25">
         <DialogHeader>
           <DialogTitle>Create New Cluster</DialogTitle>
           <DialogDescription>
-            Launches a master node on the chosen network. Cluster creation
-            runs in the background.
+            Launches a master node on the chosen network. Cluster creation runs
+            in the background.
           </DialogDescription>
         </DialogHeader>
 
