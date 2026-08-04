@@ -1,74 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { Terminal as TerminalIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-
-interface NodeTerminalDialogProps {
+interface TerminalPaneProps {
   clusterId: string;
   nodeId: string;
-  nodeName: string;
-  disabled?: boolean;
-  disabledReason?: string;
+  className?: string;
 }
 
-export function NodeTerminalDialog({
-  clusterId,
-  nodeId,
-  nodeName,
-  disabled,
-  disabledReason,
-}: NodeTerminalDialogProps) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          disabled={disabled}
-          title={disabled ? disabledReason : `Open terminal on ${nodeName}`}
-          aria-label={`Open terminal on ${nodeName}`}
-        >
-          <TerminalIcon className="h-4 w-4" />
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>Terminal — {nodeName}</DialogTitle>
-          <DialogDescription>
-            Interactive root shell inside the node's VM. Closing this dialog
-            ends the session.
-          </DialogDescription>
-        </DialogHeader>
-        {open && (
-          <TerminalPane clusterId={clusterId} nodeId={nodeId} />
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// Mounted only while the dialog is open, so its lifecycle (one effect, one
-// cleanup) exactly matches the WebSocket + xterm session's lifetime.
-function TerminalPane({
-  clusterId,
-  nodeId,
-}: {
-  clusterId: string;
-  nodeId: string;
-}) {
+// Bridges an xterm.js instance to the node's interactive shell over the
+// terminal websocket. One effect owns the whole session's lifecycle (setup
+// on mount, teardown on unmount/clusterId+nodeId change) so switching nodes
+// always starts from a clean connection.
+export function TerminalPane({ clusterId, nodeId, className }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -136,7 +81,7 @@ function TerminalPane({
   return (
     <div
       ref={containerRef}
-      className="h-[60vh] w-full overflow-hidden rounded-lg bg-black p-2"
+      className={className ?? "h-full w-full overflow-hidden bg-black p-2"}
     />
   );
 }

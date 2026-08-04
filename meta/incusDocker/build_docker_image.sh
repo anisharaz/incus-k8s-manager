@@ -26,7 +26,7 @@ DISTRO_YAML="$VM_DIR/incus_distrobuilder.yaml"
 VM_TAR="$VM_DIR/incus.tar.xz"
 VM_DISK="$VM_DIR/disk.qcow2"
 
-IMAGE_NAME="${IMAGE_NAME:-anisharaz/kii:latest}"
+IMAGE_NAME="${IMAGE_NAME:-aaraz/kiivmrunner:latest}"
 BUILD_CONTEXT="$SCRIPT_DIR"          # meta/incusDocker
 # Temp staging dir for the VM image files; passed to docker as the
 # "vmimage" named build context and removed automatically on exit.

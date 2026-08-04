@@ -6,6 +6,7 @@ import {
   Loader2,
   ServerCog,
   AlertCircle,
+  Terminal as TerminalIcon,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -37,7 +38,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AddNodeDialog } from "@/components/AddNodeDialog";
-import { NodeTerminalDialog } from "@/components/NodeTerminalDialog";
 import { api, ApiError } from "@/lib/api";
 import type {
   Cluster,
@@ -477,13 +477,22 @@ export function ClusterDetail() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                    <NodeTerminalDialog
-                      clusterId={cluster.id}
-                      nodeId={node.id}
-                      nodeName={node.name}
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       disabled={node.status !== "running"}
-                      disabledReason="The node must be running to open a terminal"
-                    />
+                      title={
+                        node.status !== "running"
+                          ? "The node must be running to open a terminal"
+                          : `Open terminal on ${node.name}`
+                      }
+                      aria-label={`Open terminal on ${node.name}`}
+                      onClick={() =>
+                        navigate(`/terminal/${cluster.id}/${node.id}`)
+                      }
+                    >
+                      <TerminalIcon className="h-4 w-4" />
+                    </Button>
                     {node.role === "master" ? null : (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>

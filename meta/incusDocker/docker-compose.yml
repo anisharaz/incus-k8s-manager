@@ -1,6 +1,6 @@
 services:
   incus:
-    image: anisharaz/kiivmrunner:latest
+    image: aaraz/kiivmrunner:latest
     container_name: incus
     privileged: true
     restart: unless-stopped
@@ -39,7 +39,7 @@ services:
       retries: 10
 
   app:
-    image: anisharaz/kiiapp:latest
+    image: aaraz/kiiapp:latest
     build:
       context: ../..
       dockerfile: Dockerfile
