@@ -51,6 +51,25 @@ sed -i "s/^KVM_GID=.*/KVM_GID=$(getent group kvm | cut -d: -f3)/" .env
 docker compose pull
 docker compose up -d
 ```
+## Screenshots
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-01-33" src="https://github.com/user-attachments/assets/43b33094-05ee-4ade-a7da-961b1b3c1b98" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-01-50" src="https://github.com/user-attachments/assets/88a75b61-c376-4a1e-8aba-6e3ff9de8c3e" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-02-04" src="https://github.com/user-attachments/assets/618e2a29-882c-44a5-9871-9a548ee9a74a" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-02-26" src="https://github.com/user-attachments/assets/e78b94a3-7807-402a-9e7d-1ee43cc62c4e" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-02-39" src="https://github.com/user-attachments/assets/6d749084-4414-40be-961f-37e0397231f3" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-03-23" src="https://github.com/user-attachments/assets/dbbf61e9-11c9-42ac-97c7-cb758899d642" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-03-52" src="https://github.com/user-attachments/assets/d9f1ba1d-9c69-4bd1-a99d-b6e54a8cf730" />
+
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-04-02" src="https://github.com/user-attachments/assets/7289ba28-81ae-4f4e-9508-d9c8679f23fe" />
+
+
 
 ## How it's put together
 
