@@ -53,23 +53,23 @@ docker compose up -d
 ```
 ## Screenshots
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-01-33" src="https://github.com/user-attachments/assets/43b33094-05ee-4ade-a7da-961b1b3c1b98" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-16-36" src="https://github.com/user-attachments/assets/3668a264-50cf-46c5-a405-5a9abdd220fc" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-01-50" src="https://github.com/user-attachments/assets/88a75b61-c376-4a1e-8aba-6e3ff9de8c3e" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-16-53" src="https://github.com/user-attachments/assets/cd0aae7b-6e94-49ae-815e-9c1509e92034" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-02-04" src="https://github.com/user-attachments/assets/618e2a29-882c-44a5-9871-9a548ee9a74a" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-16-58" src="https://github.com/user-attachments/assets/ec8cfea9-5b6d-4837-8af9-5d511046b8a9" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-02-26" src="https://github.com/user-attachments/assets/e78b94a3-7807-402a-9e7d-1ee43cc62c4e" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-17-22" src="https://github.com/user-attachments/assets/c6ef14be-e816-4cbc-aa22-9e62be6a81b6" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-02-39" src="https://github.com/user-attachments/assets/6d749084-4414-40be-961f-37e0397231f3" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-17-32" src="https://github.com/user-attachments/assets/d1fb34a8-1bec-4423-8f11-484e4fb58a66" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-03-23" src="https://github.com/user-attachments/assets/dbbf61e9-11c9-42ac-97c7-cb758899d642" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-17-43" src="https://github.com/user-attachments/assets/5834bff5-59e3-43b2-9e0d-2819f8f26872" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-03-52" src="https://github.com/user-attachments/assets/d9f1ba1d-9c69-4bd1-a99d-b6e54a8cf730" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-18-03" src="https://github.com/user-attachments/assets/54e88bcf-5a8c-4ee3-9e54-95b3f25a7574" />
 
-<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-04-02" src="https://github.com/user-attachments/assets/7289ba28-81ae-4f4e-9508-d9c8679f23fe" />
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-18-10" src="https://github.com/user-attachments/assets/563d8ed5-5140-4a48-9bfa-c8faa81cc053" />
 
-
+<img width="1896" height="949" alt="Screenshot from 2026-08-05 22-18-16" src="https://github.com/user-attachments/assets/4198dde0-5fc8-4ec5-a820-19e89ded81d4" />
 
 ## How it's put together
 
