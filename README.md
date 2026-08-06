@@ -87,6 +87,7 @@ API.md backend REST API reference
 ## Docs
 
 - [`API.md`](API.md) — full REST API reference (auth, networks, clusters, nodes, jobs, terminal websocket).
+- [`openapi.yaml`](openapi.yaml) — machine-readable OpenAPI 3.0 spec of the same API, for Swagger UI/Redoc/Postman/codegen.
 - [`be/README.md`](be/README.md) — backend architecture, local (non-Docker) setup.
 - [`meta/incusDocker/README.md`](meta/incusDocker/README.md) — building/running the Incus daemon image, KVM setup.
 

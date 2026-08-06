@@ -1,0 +1,929 @@
+openapi: 3.0.3
+info:
+  title: KOI API
+  description: |
+    REST API for **KOI (Kubernetes on Incus)** — see [`API.md`](API.md) at the
+    repo root for the full prose reference this spec is generated to match
+    (async job pattern, error shape, per-owner scoping rules, size-string
+    format, worked examples). This file is the machine-readable contract;
+    `API.md` is the human-readable one — keep both in sync.
+
+    ### Auth
+    Session is a JWT in an **HttpOnly cookie** (`auth_token`), set by
+    `/auth/register-admin` and `/auth/login`. There is no bearer-token
+    header — browser clients just need `credentials: "include"`; non-browser
+    clients must persist and resend the `Set-Cookie` value.
+
+    ### Scoping
+    Every Cluster Network / Cluster / Node / Job is scoped to its owner
+    (the logged-in user). A resource owned by someone else looks identical
+    to a nonexistent one (`404`), never a `403` — this avoids leaking
+    existence. The one exception is the `/users` endpoints, which are
+    admin-only and return `403` for a logged-in non-admin.
+
+    ### The async job pattern
+    `POST /clusters`, `POST /clusters/{id}/nodes`, `DELETE
+    /clusters/{id}/nodes/{nodeId}`, and `DELETE /clusters/{id}` all return
+    `202` immediately with the affected resource in a non-final state
+    (`creating`/`deleting`) and a `jobId` to poll via `GET /jobs/{id}` until
+    its `status` becomes `succeeded` or `failed`.
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8000
+    description: Local / docker compose (see meta/incusDocker)
+
+tags:
+  - name: Health
+    description: Liveness/readiness checks — no auth required.
+  - name: Auth
+    description: Session bootstrap, login, logout, and "who am I" — cookie-based, no bearer token.
+  - name: Users
+    description: Admin-only account management. Regular users never self-register.
+  - name: Networks
+    description: Incus bridge networks that clusters are launched onto. Created synchronously.
+  - name: Clusters
+    description: Cluster (master node) lifecycle — creation and deletion are background jobs.
+  - name: Nodes
+    description: Worker node lifecycle and the interactive terminal, scoped under a cluster.
+  - name: Jobs
+    description: Read-only polling target for cluster/node creation and deletion progress.
+
+security:
+  - cookieAuth: []
+
+paths:
+  # ---------------------------------------------------------------- Health
+  /health:
+    get:
+      tags: [Health]
+      operationId: healthCheck
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Server is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  message: { type: string, example: Server is running }
+
+  /api/v1/status:
+    get:
+      tags: [Health]
+      operationId: getIncusStatus
+      summary: Incus daemon reachability (ops diagnostic, not for UI)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: object
+                    properties:
+                      incus:
+                        type: string
+                        enum: [running, stopped, "not found"]
+
+  /api/v1/:
+    get:
+      tags: [Health]
+      operationId: getApiRoot
+      summary: API root info
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "KOI API v1" }
+                  version: { type: string, example: "1.0.0" }
+
+  # ------------------------------------------------------------------- Auth
+  /api/v1/auth/status:
+    get:
+      tags: [Auth]
+      operationId: getBootstrapStatus
+      summary: Whether the one admin account has been bootstrapped yet
+      description: Public. Call this first to decide whether to show the "create admin" screen or a normal login screen.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adminCreated: { type: boolean }
+                required: [adminCreated]
+
+  /api/v1/auth/register-admin:
+    post:
+      tags: [Auth]
+      operationId: registerAdmin
+      summary: Bootstrap the one admin account (works exactly once)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialsRequest" }
+      responses:
+        "201":
+          description: Admin created and logged in (session cookie set)
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/SessionCookie" }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: An admin already exists — use /auth/login instead
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Log in as the admin or any regular user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialsRequest" }
+      responses:
+        "200":
+          description: Logged in (session cookie set)
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/SessionCookie" }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Wrong username or password (deliberately the same message for both, to avoid username enumeration)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Clear the session cookie
+      description: Safe to call even if not currently logged in.
+      security: []
+      responses:
+        "204":
+          description: Logged out
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/SessionCookie" }
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: Currently authenticated user
+      description: Since the session cookie is HttpOnly, this is the only way the frontend can find out who's logged in (e.g. on page load).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ------------------------------------------------------------------ Users
+  /api/v1/users:
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create a regular user
+      description: Admin-only. `role` is always `"user"` — the one admin account only ever comes from `/auth/register-admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialsRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Username already taken
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List all users
+      description: Admin-only. Newest first.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get a single user
+      description: Admin-only.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --------------------------------------------------------------- Networks
+  /api/v1/networks:
+    post:
+      tags: [Networks]
+      operationId: createNetwork
+      summary: Create a cluster network
+      description: |
+        `cidr` is optional — if omitted, Incus auto-picks an unused private
+        subnet (`ipv4.address: auto`); if provided, it's checked against
+        every network Incus knows about to avoid an overlap. Synchronous
+        (`201`, not `202` — no background job).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateClusterNetworkRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  network: { $ref: "#/components/schemas/ClusterNetwork" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: Duplicate name (yours) or CIDR conflict with an existing Incus network
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ServerError" }
+    get:
+      tags: [Networks]
+      operationId: listNetworks
+      summary: List your cluster networks
+      description: Newest first. Scoped to the caller.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  networks:
+                    type: array
+                    items: { $ref: "#/components/schemas/ClusterNetwork" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/networks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/NetworkId"
+    get:
+      tags: [Networks]
+      operationId: getNetwork
+      summary: Get a single cluster network
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  network: { $ref: "#/components/schemas/ClusterNetwork" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Networks]
+      operationId: deleteNetwork
+      summary: Delete a cluster network
+      description: Deletes from both Incus and the database.
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: Incus refused (e.g. still referenced by a Cluster)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  # --------------------------------------------------------------- Clusters
+  /api/v1/clusters:
+    post:
+      tags: [Clusters]
+      operationId: createCluster
+      summary: Create a cluster (and its master node)
+      description: Launches the master's VM as a background job — poll before assuming the cluster is usable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateClusterRequest" }
+      responses:
+        "202":
+          description: Accepted — cluster row created, master provisioning in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cluster: { $ref: "#/components/schemas/Cluster" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: networkId doesn't exist or belongs to someone else
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: You already have a cluster with that name
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ServerError" }
+    get:
+      tags: [Clusters]
+      operationId: listClusters
+      summary: List your clusters
+      description: Newest first. Scoped to the caller.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clusters:
+                    type: array
+                    items: { $ref: "#/components/schemas/Cluster" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/clusters/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+    get:
+      tags: [Clusters]
+      operationId: getCluster
+      summary: Get a single cluster
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cluster: { $ref: "#/components/schemas/Cluster" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Clusters]
+      operationId: deleteCluster
+      summary: Delete the entire cluster (every node's VM, then the cluster itself)
+      description: |
+        The only way to remove a master. Works from any cluster state,
+        including `failed` — retrying is safe (VM teardown is idempotent).
+        The `Cluster` row (and all `Node` rows, cascaded) disappears only
+        once the job succeeds — a subsequent `GET` on this same path
+        returning `404` is the success signal.
+      responses:
+        "202":
+          description: Accepted — cluster and all nodes marked deleting, teardown running in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cluster: { $ref: "#/components/schemas/Cluster" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: A deletion job is already running for this cluster
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/clusters/{id}/kubeconfig:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+    get:
+      tags: [Clusters]
+      operationId: getClusterKubeconfig
+      summary: Download the cluster's admin kubeconfig
+      description: |
+        Read live from the master's `/root/.kube/config`. **Not the usual
+        JSON envelope** — the response body *is* the kubeconfig YAML.
+      responses:
+        "200":
+          description: Kubeconfig YAML
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: 'attachment; filename="<cluster-name>-kubeconfig.yaml"'
+          content:
+            application/yaml:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Master isn't running yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  # ------------------------------------------------------------------ Nodes
+  /api/v1/clusters/{id}/nodes:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+    get:
+      tags: [Nodes]
+      operationId: listNodes
+      summary: List a cluster's nodes
+      description: Master first, then workers in the order they were added.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/ClusterNode" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Nodes]
+      operationId: createNode
+      summary: Add a worker node to the cluster
+      description: |
+        Fetches a fresh join token from the master and runs `kubeadm join`
+        as a background job. Requires the cluster to be `ready` and its
+        master `running`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNodeRequest" }
+      responses:
+        "202":
+          description: Accepted — node row created, join running in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: "#/components/schemas/ClusterNode" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Cluster not ready, or master not running
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/clusters/{id}/nodes/{nodeId}:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/NodeId"
+    delete:
+      tags: [Nodes]
+      operationId: deleteNode
+      summary: Delete a single worker node
+      description: |
+        Drains the node and removes its Node API object (via the master),
+        runs `kubeadm reset --force` on the worker itself, then deletes its
+        VM — as a background job. The rest of the cluster keeps running.
+        Deleting the **master** isn't supported here — delete the whole
+        cluster instead (`DELETE /clusters/{id}`).
+      responses:
+        "202":
+          description: Accepted — node marked deleting, teardown running in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: "#/components/schemas/ClusterNode" }
+        "400":
+          description: Target is the master — delete the cluster instead
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Node already has an operation in progress, or the master isn't running
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /api/v1/clusters/{id}/nodes/{nodeId}/terminal:
+    parameters:
+      - $ref: "#/components/parameters/ClusterId"
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      tags: [Nodes]
+      operationId: openNodeTerminal
+      summary: Interactive terminal (WebSocket upgrade)
+      x-websocket: true
+      description: |
+        **This is a WebSocket upgrade, not a normal REST call** — OpenAPI
+        has no first-class way to describe that, so this entry documents
+        the pre-upgrade contract and the wire protocol in prose instead.
+
+        Opens an interactive `bash` shell (running as root) inside the
+        node's VM — works for either role, master or worker. Auth/ownership/
+        status checks happen on the initial upgrade request (the same
+        cookie-based session as every other endpoint — a plain browser
+        `new WebSocket(...)` carries it automatically); a failed check
+        returns a normal HTTP error below and the socket never upgrades.
+
+        **Wire protocol once upgraded:**
+        - Binary frames carry raw PTY bytes both ways (keystrokes in,
+          terminal output out) — no framing, write straight into/out of a
+          terminal emulator (e.g. xterm.js).
+        - Text frames are a JSON control envelope, currently only sent
+          browser→server: `{"type":"resize","cols":<int>,"rows":<int>}`,
+          sent whenever the terminal's size changes (including once right
+          after connecting).
+
+        No idle timeout — the session runs until the browser closes the
+        socket, same lifetime model as SSH.
+      responses:
+        "101":
+          description: Switching Protocols — the terminal session is now live
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Node isn't running
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  # ------------------------------------------------------------------- Jobs
+  /api/v1/jobs:
+    get:
+      tags: [Jobs]
+      operationId: listJobs
+      summary: List your jobs
+      description: Newest first. No filter by node/cluster — find the jobId you care about via the node/cluster endpoints first.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/jobs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      summary: Get a single job
+      description: The primary polling target for provisioning/deletion progress.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth_token
+      description: HttpOnly JWT session cookie, set by /auth/register-admin or /auth/login.
+
+  headers:
+    SessionCookie:
+      description: Sets or clears the `auth_token` HttpOnly cookie.
+      schema: { type: string }
+
+  parameters:
+    ClusterId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Cluster ID.
+    NodeId:
+      name: nodeId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Node ID.
+    NetworkId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Cluster network ID.
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: User ID.
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Job ID.
+
+  responses:
+    BadRequest:
+      description: Validation error — safe to show `message` next to the offending field
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: Not logged in, or session cookie missing/invalid/expired
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: Logged in, but this account's role isn't allowed to do this
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: Not found (or belongs to someone else — the two look identical, by design)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    ServerError:
+      description: Server/database/Incus error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: Shape of every non-2xx response.
+      required: [error, message, code]
+      properties:
+        error:
+          type: string
+          description: Short machine-ish category. Not a stable enum — switch on the HTTP status code instead.
+          example: validation error
+        message:
+          type: string
+          description: Human-readable detail, safe to show directly in a UI.
+          example: "cpu must be at least 2, got 1"
+        code:
+          type: integer
+          description: Repeats the HTTP status code.
+          example: 400
+
+    CredentialsRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 63
+        password:
+          type: string
+          minLength: 8
+          description: Minimum 8 characters, enforced for every account (admin or regular user).
+
+    User:
+      type: object
+      description: Never includes a password/hash — excluded from JSON entirely, server-side.
+      required: [id, username, role, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        role: { type: string, enum: [admin, user] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CreateClusterNetworkRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          description: Free-form, unique per owner.
+        cidr:
+          type: string
+          nullable: true
+          description: IPv4 network address (no host bits), prefix /8-/29. Omit to have Incus auto-assign one.
+          example: "10.10.0.0/24"
+
+    ClusterNetwork:
+      type: object
+      required: [id, ownerId, name, incusName, cidr, gateway, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        name: { type: string }
+        incusName:
+          type: string
+          description: Server-generated Incus bridge interface name. Never construct this yourself.
+        cidr: { type: string, example: "10.10.0.0/24" }
+        gateway: { type: string, example: "10.10.0.1" }
+        status: { type: string, enum: [creating, ready, failed] }
+        message: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CreateClusterRequest:
+      type: object
+      required: [networkId, name]
+      properties:
+        networkId: { type: string, format: uuid }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          description: Free-form, unique per owner.
+        cni:
+          type: string
+          enum: [cilium]
+          default: cilium
+          description: Pod networking plugin installed after kubeadm init. "cilium" is currently the only allowed value.
+        cpu:
+          type: integer
+          minimum: 2
+          default: 2
+          description: vCPUs for the master's VM. kubeadm's own hard preflight minimum.
+        memory:
+          type: string
+          default: "2GiB"
+          description: 'Incus size-string format (e.g. "2GiB"). Minimum 1700MB (kubeadm preflight).'
+        disk:
+          type: string
+          default: "20GiB"
+          description: 'Incus size-string format. Minimum 20GiB (this app''s own floor, not kubeadm-enforced).'
+
+    Cluster:
+      type: object
+      required: [id, ownerId, networkId, name, cni, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        networkId: { type: string, format: uuid }
+        jobId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Present only while a DELETE is in progress. Not used for creation (see the master Node's jobId for that).
+        name: { type: string }
+        cni: { type: string, enum: [cilium] }
+        status: { type: string, enum: [creating, ready, failed, deleting] }
+        message: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CreateNodeRequest:
+      type: object
+      description: Entirely optional — {} or no body at all uses every default. Same fields/rules as Cluster creation's cpu/memory/disk.
+      properties:
+        cpu: { type: integer, minimum: 2, default: 2 }
+        memory: { type: string, default: "2GiB" }
+        disk: { type: string, default: "20GiB" }
+
+    ClusterNode:
+      type: object
+      required: [id, clusterId, name, incusName, role, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        clusterId: { type: string, format: uuid }
+        jobId:
+          type: string
+          format: uuid
+          description: The node's latest provisioning/deletion job. Present effectively always once the row exists.
+        name:
+          type: string
+          description: 'Display name, unique per cluster (e.g. "master", "worker-1").'
+        incusName:
+          type: string
+          description: Server-generated, globally-unique Incus VM instance name. Never construct this yourself.
+        role: { type: string, enum: [master, worker] }
+        status: { type: string, enum: [creating, running, stopped, failed, deleting] }
+        ip: { type: string, description: Empty until the provisioning job progresses far enough to know it. }
+        message: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Job:
+      type: object
+      required: [id, ownerId, type, status, progress, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [node_provision, node_deletion, cluster_deletion]
+          description: Check metadata.role (node_provision) / metadata.nodeId / metadata.clusterId to know which resource this job is about.
+        name: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        stage:
+          type: string
+          description: Informational progress string (e.g. "launching", "bootstrapping", "joining") — not a fixed enum, just display it.
+        message: { type: string }
+        result:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 'Populated on success. Currently just {"ip": "..."} for node_provision.'
+        error:
+          type: string
+          nullable: true
+          description: Raw underlying failure detail (often multi-line command output) — fine for a collapsible "details" section, not the headline message.
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }

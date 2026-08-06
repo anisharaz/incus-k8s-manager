@@ -3,6 +3,11 @@
 REST API for the KOI (Kubernetes on Incus) backend (`be/`). This is the contract the
 frontend (`fe/`) codes against.
 
+> A machine-readable version of this same contract lives at
+> [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) — import it into Swagger UI/
+> Redoc/Postman, or feed it to a client-code generator. Keep both in sync
+> when the API changes.
+
 - **Base URL (dev):** `http://localhost:8000` (`PORT` env var, see `be/.env.example`)
 - **Format:** all requests/responses are JSON (`Content-Type: application/json`)
 - **Auth:** cookie-based session (see [Authentication](#authentication)
