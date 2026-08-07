@@ -20,7 +20,14 @@ type Config struct {
 	IncusSocketPath string
 	JWTSecret       []byte
 	// CookieSecure sets the session cookie's Secure attribute (HTTPS-only).
-	// True whenever ENV=production; local dev over plain HTTP needs it false.
+	// An explicit "is there TLS in front of me right now" flag (COOKIE_SECURE
+	// env var) — set by the operator (the bundled Caddy proxy in
+	// docker-compose, or a future Kubernetes Ingress), not inferred from ENV
+	// or trusted from an X-Forwarded-Proto header (which would require
+	// trusting the edge proxy to strip/overwrite client-supplied values; an
+	// explicit flag is simpler and can't be spoofed). Defaults to false so
+	// running the binary directly (make dev/run, no proxy in front) keeps
+	// working over plain HTTP with no extra config.
 	CookieSecure bool
 }
 
@@ -41,7 +48,7 @@ func NewConfig() *Config {
 		// meta/incusDocker/docker-compose.yml's incus-socket-share volume).
 		IncusSocketPath: getEnv("INCUS_SOCKET_PATH", "/shared-socket/incus.sock"),
 		JWTSecret:       loadJWTSecret(),
-		CookieSecure:    env == "production",
+		CookieSecure:    getEnv("COOKIE_SECURE", "false") == "true",
 	}
 }
 

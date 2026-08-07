@@ -23,9 +23,11 @@ Everything — the Incus daemon, Postgres, and the app itself — runs as one `d
 curl -fsSL https://raw.githubusercontent.com/anisharaz/incus-k8s-manager/refs/heads/main/meta/incusDocker/quickstart.sh | bash
 ```
 
-This downloads `docker-compose.yml` into an `incus-k8s-manager/` directory, generates a `.env` with your host's KVM group auto-detected, and runs `docker compose up -d`. Once the containers report healthy (`docker compose ps`), open **http://localhost:8000** — you'll land on a one-time "create admin account" screen. After that, log in, create a network, create a cluster, and watch it come up.
+This downloads `docker-compose.yml` into an `incus-k8s-manager/` directory, generates a `.env` with your host's KVM group auto-detected, and runs `docker compose up -d`. Once the containers report healthy (`docker compose ps`), open **https://localhost** (or `https://<server-ip>` from another machine) — you'll land on a one-time "create admin account" screen. After that, log in, create a network, create a cluster, and watch it come up.
 
 > First run pulls a few images and the Incus daemon initializes itself — give it a minute. See [`meta/incusDocker/README.md`](meta/incusDocker/README.md) if `KVM_GID`/KVM support needs troubleshooting on your host.
+>
+> The stack terminates TLS itself with a self-signed certificate — there's no domain name involved, so your browser will show a "not secure" warning the first time. That's expected; click through it. The connection is still genuinely encrypted, and (unlike plain HTTP) the login cookie actually works on anything other than `localhost` — see [`meta/incusDocker/README.md`](meta/incusDocker/README.md#https) for why that matters and how to swap in a real domain + Let's Encrypt later.
 
 ### Manual setup
 
@@ -43,6 +45,7 @@ POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 POSTGRES_DB=incus_k8s_manager
 # JWT_SECRET=
+COOKIE_SECURE=true
 EOF
 
 # Point KVM_GID at your host's actual kvm group

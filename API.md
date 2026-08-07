@@ -8,7 +8,8 @@ frontend (`fe/`) codes against.
 > Redoc/Postman, or feed it to a client-code generator. Keep both in sync
 > when the API changes.
 
-- **Base URL (dev):** `http://localhost:8000` (`PORT` env var, see `be/.env.example`)
+- **Base URL (dev, running `be/` directly):** `http://localhost:8000` (`PORT` env var, see `be/.env.example`)
+- **Base URL (docker compose):** `https://localhost` (or your server's address) — the bundled `proxy` (Caddy) service terminates TLS in front of the app; see [`meta/incusDocker/README.md#https`](../meta/incusDocker/README.md#https).
 - **Format:** all requests/responses are JSON (`Content-Type: application/json`)
 - **Auth:** cookie-based session (see [Authentication](#authentication)
   below). The app has exactly one **admin** (created once via a bootstrap
@@ -19,6 +20,12 @@ frontend (`fe/`) codes against.
   is managing the Users list; it has no cross-user visibility into anyone
   else's clusters). There is no `ownerId` field in any request body
   anymore — the owner is always the logged-in user, never client-supplied.
+  The session cookie is marked `Secure` whenever `COOKIE_SECURE=true`
+  (the default in docker compose, since `proxy` terminates TLS) — browsers
+  then require a real HTTPS connection to store/send it at all (an
+  exception is made for `localhost`, which they treat as secure even over
+  plain HTTP — this is why the same setup can silently "not log in" if
+  accessed over plain HTTP by IP instead).
 - **CORS (dev):** `http://localhost:5173`, `http://localhost:8000`,
   `http://localhost:3000` are allowed, with credentials
   (`be/internal/middleware/cors.go`) — required for the session cookie to

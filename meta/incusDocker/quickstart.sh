@@ -33,6 +33,9 @@ POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 POSTGRES_DB=incus_k8s_manager
 # JWT_SECRET=
+
+# The bundled proxy service terminates TLS in front of the app.
+COOKIE_SECURE=true
 EOF
   echo "==> Wrote .env (KVM_GID=$KVM_GID)"
 else
@@ -49,6 +52,11 @@ cat <<'EOF'
 
 Done. Once the containers report healthy (docker compose ps), open:
 
-  http://localhost:8000
+  https://localhost   (or https://<this-server's-IP> from another machine)
+
+The stack terminates TLS itself with a self-signed certificate (no domain
+needed), so your browser will show a "not secure" warning the first time —
+that's expected, click through it. The connection is still genuinely
+encrypted; only the certificate is unverified by a public CA.
 
 EOF

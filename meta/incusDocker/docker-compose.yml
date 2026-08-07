@@ -58,12 +58,80 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-incus_k8s_manager}?sslmode=disable"
       INCUS_SOCKET_PATH: /shared-socket/incus.sock
       JWT_SECRET: "${JWT_SECRET:-}"
-    ports:
-      - "8000:8000"
+      # The bundled proxy service below terminates TLS in front of this app,
+      # so the session cookie should be marked Secure. Set to "false" if
+      # you're fronting the stack with your own TLS-terminating LB/proxy
+      # instead and removing the proxy service.
+      COOKIE_SECURE: "${COOKIE_SECURE:-true}"
+    # No published port — only reachable via the proxy service now, so TLS
+    # is the only way in (avoids anyone bookmarking the insecure origin).
     volumes:
       - incus-socket-share:/shared-socket:ro
+
+  # Terminates TLS in front of `app`. The Caddyfile is inlined below in
+  # `configs:` (Compose's file-less config content) rather than a separate
+  # file — users only ever fetch this one docker-compose.yml, so a companion
+  # Caddyfile isn't an option.
+  #
+  # `tls internal { on_demand }` mints a self-signed cert (via Caddy's own
+  # CA) for whatever hostname/IP a client connects with, generated the first
+  # time that identity is seen — there's no domain name to request a public
+  # cert for yet, and this works for both `https://localhost` and
+  # `https://<server-ip>` without knowing the server's address in advance.
+  # On-demand issuance requires a same-host "ask" endpoint that approves
+  # every request (the :9080 block below, bound to loopback only) — without
+  # it Caddy refuses to hand out certs for arbitrary incoming names at all.
+  #
+  # Moving to a real domain later: replace the `:443` block's `tls internal
+  # { on_demand }` with just `tls you@yourdomain.com` (or drop the `tls`
+  # line entirely) and the site address `:443` with `yourdomain.com` — Caddy
+  # then gets a real cert from Let's Encrypt automatically. Zero changes to
+  # `app`.
+  #
+  # HTTP (:80) is redirected to HTTPS automatically; WebSocket upgrades
+  # (used by the terminal endpoint) are proxied transparently by
+  # `reverse_proxy`, same as any other request.
+  proxy:
+    image: caddy:2-alpine
+    container_name: proxy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      # Persists the self-signed CA cert across restarts/recreates, so
+      # browsers that already trusted it don't need to re-trust a new one.
+      - caddy-data:/data
+
+configs:
+  caddyfile:
+    content: |
+      {
+        on_demand_tls {
+          ask http://127.0.0.1:9080/allow
+        }
+      }
+
+      http://:9080 {
+        bind 127.0.0.1
+        respond /allow 200
+      }
+
+      :443 {
+        tls internal {
+          on_demand
+        }
+        reverse_proxy app:8000
+      }
 
 volumes:
   incus-data:
   incus-socket-share:
   postgres-data:
+  caddy-data:

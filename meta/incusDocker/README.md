@@ -10,7 +10,7 @@ This folder contains everything needed to build a containerized [Incus](https://
 | `entrypoint.sh`           | Entrypoint: starts `lxcfs`, `udevd`, `incusd`, then runs the preseed **and imports the k8s VM image** on first start (tracked by a marker in `/var/lib/incus`).      |
 | `incus_admin_config.yaml` | Admin config: HTTPS on `:8443`, `default` dir pool, `clustermanagerbr0` bridge (NAT), default profile + project.                                                     |
 | `run_app.sh`              | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, writes `.env`, and runs `docker compose up -d --wait` for the whole stack (`incus`, `postgres`, `app`). |
-| `docker-compose.yml`      | Compose definition for the full stack: `incus` (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume), `postgres`, and `app`.   |
+| `docker-compose.yml`      | Compose definition for the full stack: `incus` (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume), `postgres`, `app`, and `proxy` (Caddy, terminates TLS). |
 | `build_docker_image.sh`   | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.               |
 | `incusStuff/`             | Source folder for the k8s VM image: `incus_distrobuilder.yaml` (distrobuilder config) plus the built `incus.tar.xz` + `disk.qcow2`.                                  |
 
@@ -71,7 +71,7 @@ No flags — it always drives the `docker-compose.yml` in this directory as-is. 
 
 ## Docker Compose
 
-`docker-compose.yml` brings up the full stack: the `incus` daemon (mirrors the `docker run` options above, always on the **host** network namespace), a `postgres` database, and `app` — the backend itself, built from `../../be/Dockerfile`. `app` waits on `postgres`'s healthcheck before starting, and applies any pending database migrations itself on every startup (see `be/cmd/server/main.go`'s `runMigrations`) — there's no separate migration step to run. Environment variables are configured in a `.env` file that `docker compose` auto-loads from this directory.
+`docker-compose.yml` brings up the full stack: the `incus` daemon (mirrors the `docker run` options above, always on the **host** network namespace), a `postgres` database, `app` — the backend itself, built from `../../Dockerfile` — and `proxy`, a Caddy container that terminates TLS in front of `app` (see [HTTPS](#https) below). `app` waits on `postgres`'s healthcheck before starting, and applies any pending database migrations itself on every startup (see `be/cmd/server/main.go`'s `runMigrations`) — there's no separate migration step to run. `app` has no published port of its own; `proxy` is the only way in from outside the compose network. Environment variables are configured in a `.env` file that `docker compose` auto-loads from this directory.
 
 First, check and adjust `KVM_GID` in `.env` for **your** host (see below), then:
 
@@ -92,7 +92,7 @@ docker compose logs -f app
 docker compose down
 ```
 
-The API is then reachable at `http://localhost:8000` (e.g. `curl localhost:8000/api/v1/auth/status`).
+The API is then reachable at `https://localhost` (e.g. `curl -k https://localhost/api/v1/auth/status` — `-k` because the cert is self-signed by default, see below).
 
 ### Environment via `.env`
 
@@ -107,6 +107,8 @@ POSTGRES_PASSWORD=postgres
 POSTGRES_DB=incus_k8s_manager
 # JWT_SECRET=       # set this for any deployment that should survive a restart
                      # without invalidating sessions — see be/README.md
+COOKIE_SECURE=true   # keep true as long as `proxy` (or some other TLS
+                     # terminator) sits in front of `app` — see HTTPS below
 ```
 
 `docker compose` reads `.env` automatically, so a plain `docker compose up -d` is all you need. To change a value, edit `.env` and run `docker compose up -d` again (Compose recreates the container with the new env).
@@ -132,6 +134,70 @@ sed -i "s/^KVM_GID=.*/KVM_GID=$(getent group kvm | cut -d: -f3)/" .env
 ```
 
 > Shell exports take priority over `.env` in Compose, so a one-off override is still possible: `SETIPTABLES=false docker compose up -d`.
+
+## HTTPS
+
+A session cookie marked `Secure` (which this app always sets when
+`COOKIE_SECURE=true`) is only stored/sent by browsers over a real HTTPS
+connection — **except** for `localhost`/`127.0.0.1`, which browsers treat
+as secure even over plain HTTP. That's why logging in works fine at
+`http://localhost:8000` but silently fails (login "succeeds" but nothing
+stays logged in) at `http://<server-ip>:8000` — the browser just discards
+the cookie. So this stack terminates real HTTPS itself, in front of `app`,
+rather than ever running over plain HTTP outside of `localhost`.
+
+The `proxy` service (`caddy:2-alpine`) does this with **no separate config
+file to download** — the whole Caddyfile is inlined in `docker-compose.yml`
+itself, under the top-level `configs:` key (Compose's file-less config
+content), and mounted into the container at `/etc/caddy/Caddyfile`:
+
+```
+:443 {
+  tls internal {
+    on_demand
+  }
+  reverse_proxy app:8000
+}
+```
+
+(plus a small same-host `:9080` block that unconditionally approves
+on-demand certificate requests — required for `on_demand` to work at all,
+see the comments above the `proxy` service for why.)
+
+- `tls internal { on_demand }` mints a self-signed certificate from Caddy's
+  own internal CA **the first time a given hostname/IP connects**, rather
+  than for one fixed identifier — so it works equally for
+  `https://localhost` and `https://<server-ip>` without knowing the
+  server's address ahead of time. There's no domain name involved, so
+  browsers will show a "not secure, proceed anyway" warning the first time
+  — expected, and the connection is still genuinely encrypted (the cookie
+  works correctly). `caddy-data` (a named volume) persists the CA and
+  issued certs across restarts, so they aren't regenerated — and
+  re-flagged as newly-untrusted — every time the container recreates.
+- HTTP (`:80`) redirects to HTTPS automatically — Caddy does this by
+  default whenever it's serving TLS.
+- WebSocket connections (used by the in-browser node terminal) are proxied
+  transparently by `reverse_proxy`, same as any other request.
+
+**If you get a real domain name later**, edit the `caddyfile` config's
+content in `docker-compose.yml`, replacing the `:443` block with:
+```
+yourdomain.com {
+  reverse_proxy app:8000
+}
+```
+(drop the `tls internal { on_demand }` block and the `:9080` ask endpoint
+entirely) — Caddy then requests and renews a real Let's Encrypt certificate
+automatically. Nothing in `app` needs to change either way; it only ever
+speaks plain HTTP and has no idea whether `proxy` is using a self-signed or
+a real certificate.
+
+**If you'd rather front the stack with your own reverse proxy/load
+balancer** (common once this moves behind a real ingress, e.g. a future
+Kubernetes deployment), remove the `proxy` service, publish `app`'s port
+8000 yourself, and set `COOKIE_SECURE` to match whatever your own
+TLS-terminator does (`true` if it terminates TLS, `false` if you're
+intentionally running over plain HTTP, e.g. an isolated LAN test).
 
 ---
 
