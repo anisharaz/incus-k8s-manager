@@ -22,6 +22,27 @@ services:
       # to /shared-socket/incus.sock so other containers can drive the API.
       - incus-socket-share:/shared-socket
 
+    # Overrides the image's baked-in `incus query /1.0` HEALTHCHECK: that
+    # only proves incusd is answering, not that entrypoint.sh's one-time
+    # `incus admin init --preseed` and k8s VM image import have finished —
+    # app can reach the socket during that window and fail cluster creation
+    # (no network/profile yet, no "k8s" image alias). Healthy now means all
+    # three: daemon responding, preseed done, and the "k8s" image imported.
+    # start_period is generous because the VM image import (~1GB, local
+    # disk only, no network) runs on first boot only, and cold storage-pool
+    # setup can be slow on spinning disks.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          incus query /1.0 >/dev/null 2>&1 &&
+          test -f /var/lib/incus/.preseed-done &&
+          incus image list -c l --format csv 2>/dev/null | grep -qx k8s
+      interval: 10s
+      timeout: 5s
+      start_period: 180s
+      retries: 18
+
   postgres:
     image: postgres:16
     container_name: postgres
@@ -47,7 +68,7 @@ services:
     restart: unless-stopped
     depends_on:
       incus:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
     environment:
