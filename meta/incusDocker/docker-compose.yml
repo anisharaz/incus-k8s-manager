@@ -1,7 +1,7 @@
 services:
-  incus:
+  koivmrunner:
     image: aaraz/koivmrunner:latest
-    container_name: incus
+    container_name: koivmrunner
     privileged: true
     restart: unless-stopped
     network_mode: host
@@ -43,9 +43,9 @@ services:
       start_period: 180s
       retries: 18
 
-  postgres:
+  koipostgres:
     image: postgres:16
-    container_name: postgres
+    container_name: koipostgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-postgres}"
@@ -59,24 +59,24 @@ services:
       timeout: 5s
       retries: 10
 
-  app:
+  koiapp:
     image: aaraz/koiapp:latest
     build:
       context: ../..
       dockerfile: Dockerfile
-    container_name: app
+    container_name: koiapp
     restart: unless-stopped
     depends_on:
-      incus:
+      koivmrunner:
         condition: service_healthy
-      postgres:
+      koipostgres:
         condition: service_healthy
     environment:
       PORT: "8000"
       ENV: "${ENV:-production}"
       # Migrations run automatically on startup (see be/cmd/server/main.go's
       # runMigrations) — no separate migrate step needed.
-      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-incus_k8s_manager}?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@koipostgres:5432/${POSTGRES_DB:-incus_k8s_manager}?sslmode=disable"
       INCUS_SOCKET_PATH: /shared-socket/incus.sock
       JWT_SECRET: "${JWT_SECRET:-}"
       # The bundled proxy service below terminates TLS in front of this app,
@@ -117,7 +117,7 @@ services:
     container_name: proxy
     restart: unless-stopped
     depends_on:
-      app:
+      koiapp:
         condition: service_started
     configs:
       - source: caddyfile
@@ -148,7 +148,7 @@ configs:
         tls internal {
           on_demand
         }
-        reverse_proxy app:8000
+        reverse_proxy koiapp:8000
       }
 
 volumes:

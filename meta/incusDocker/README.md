@@ -4,15 +4,15 @@ This folder contains everything needed to build a containerized [Incus](https://
 
 ## Contents
 
-| File                      | Description                                                                                                                                                          |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile`              | Builds the image, installs Incus + dependencies, copies `entrypoint.sh`, the preseed config, and bakes in the prebuilt k8s VM image (`incus.tar.xz` + `disk.qcow2`). |
-| `entrypoint.sh`           | Entrypoint: starts `lxcfs`, `udevd`, `incusd`, then runs the preseed **and imports the k8s VM image** on first start (tracked by a marker in `/var/lib/incus`).      |
-| `incus_admin_config.yaml` | Admin config: HTTPS on `:8443`, `default` dir pool, `clustermanagerbr0` bridge (NAT), default profile + project.                                                     |
-| `run_app.sh`              | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, writes `.env`, and runs `docker compose up -d --wait` for the whole stack (`incus`, `postgres`, `app`). |
+| File                      | Description                                                                                                                                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`              | Builds the image, installs Incus + dependencies, copies `entrypoint.sh`, the preseed config, and bakes in the prebuilt k8s VM image (`incus.tar.xz` + `disk.qcow2`).                                |
+| `entrypoint.sh`           | Entrypoint: starts `lxcfs`, `udevd`, `incusd`, then runs the preseed **and imports the k8s VM image** on first start (tracked by a marker in `/var/lib/incus`).                                     |
+| `incus_admin_config.yaml` | Admin config: HTTPS on `:8443`, `default` dir pool, `clustermanagerbr0` bridge (NAT), default profile + project.                                                                                    |
+| `run_app.sh`              | Host-side helper: validates Docker/KVM, resolves `KVM_GID`, writes `.env`, and runs `docker compose up -d --wait` for the whole stack (`koivmrunner`, `koipostgres`, `koiapp`).                     |
 | `docker-compose.yml`      | Compose definition for the full stack: `incus` (privileged, `KVM_GID`, `SETIPTABLES`, `/dev` + `/lib/modules` mounts, `incus-data` volume), `postgres`, `app`, and `proxy` (Caddy, terminates TLS). |
-| `build_docker_image.sh`   | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.               |
-| `incusStuff/`             | Source folder for the k8s VM image: `incus_distrobuilder.yaml` (distrobuilder config) plus the built `incus.tar.xz` + `disk.qcow2`.                                  |
+| `build_docker_image.sh`   | Recommended build wrapper: ensures `incusStuff/incus.tar.xz`/`disk.qcow2` exist (runs distrobuilder if needed), stages them, then runs `docker build`.                                              |
+| `incusStuff/`             | Source folder for the k8s VM image: `incus_distrobuilder.yaml` (distrobuilder config) plus the built `incus.tar.xz` + `disk.qcow2`.                                                                 |
 
 ---
 
@@ -71,7 +71,7 @@ No flags — it always drives the `docker-compose.yml` in this directory as-is. 
 
 ## Docker Compose
 
-`docker-compose.yml` brings up the full stack: the `incus` daemon (mirrors the `docker run` options above, always on the **host** network namespace), a `postgres` database, `app` — the backend itself, built from `../../Dockerfile` — and `proxy`, a Caddy container that terminates TLS in front of `app` (see [HTTPS](#https) below). `app` waits on both `postgres`'s and `incus`'s healthchecks before starting. `incus`'s healthcheck overrides the image's default (which only checks that `incusd` answers) to also wait for `entrypoint.sh`'s one-time preseed and k8s VM image import to finish — `app` reaching the daemon before then would see no network/profile and no `k8s` image, and cluster creation would fail. `app` applies any pending database migrations itself on every startup (see `be/cmd/server/main.go`'s `runMigrations`) — there's no separate migration step to run. `app` has no published port of its own; `proxy` is the only way in from outside the compose network. Environment variables are configured in a `.env` file that `docker compose` auto-loads from this directory.
+`docker-compose.yml` brings up the full stack: the `koivmrunner` daemon (mirrors the `docker run` options above, always on the **host** network namespace), `koipostgres` — a Postgres database, `koiapp` — the backend itself, built from `../../Dockerfile` — and `proxy`, a Caddy container that terminates TLS in front of `koiapp` (see [HTTPS](#https) below). `koiapp` waits on both `koipostgres`'s and `koivmrunner`'s healthchecks before starting. `koivmrunner`'s healthcheck overrides the image's default (which only checks that `incusd` answers) to also wait for `entrypoint.sh`'s one-time preseed and k8s VM image import to finish — `koiapp` reaching the daemon before then would see no network/profile and no `k8s` image, and cluster creation would fail. `koiapp` applies any pending database migrations itself on every startup (see `be/cmd/server/main.go`'s `runMigrations`) — there's no separate migration step to run. `koiapp` has no published port of its own; `proxy` is the only way in from outside the compose network. Environment variables are configured in a `.env` file that `docker compose` auto-loads from this directory.
 
 First, check and adjust `KVM_GID` in `.env` for **your** host (see below), then:
 
@@ -81,12 +81,12 @@ cd meta/incusDocker
 # Start (--build picks up any be/ source changes)
 docker compose up -d --build
 
-# Wait until incus reports "healthy" and postgres/app are "running"
+# Wait until koivmrunner reports "healthy" and koipostgres/koiapp are "running"
 docker compose ps
 
 # Logs
-docker compose logs -f incus
-docker compose logs -f app
+docker compose logs -f koivmrunner
+docker compose logs -f koiapp
 
 # Stop & remove
 docker compose down
@@ -181,11 +181,13 @@ see the comments above the `proxy` service for why.)
 
 **If you get a real domain name later**, edit the `caddyfile` config's
 content in `docker-compose.yml`, replacing the `:443` block with:
+
 ```
 yourdomain.com {
   reverse_proxy app:8000
 }
 ```
+
 (drop the `tls internal { on_demand }` block and the `:9080` ask endpoint
 entirely) — Caddy then requests and renews a real Let's Encrypt certificate
 automatically. Nothing in `app` needs to change either way; it only ever
@@ -266,6 +268,8 @@ docker run -d \
 ---
 
 ## Using Incus
+
+> The commands below use `incus` as the container name, matching the standalone `docker run --name incus` example above. If you're running the bundled `docker-compose.yml` instead, the container is named `koivmrunner` — substitute that name in.
 
 After the container starts, `entrypoint.sh` waits for `incusd` to be ready and then runs the preseed **only once** (tracked by a marker file at `/var/lib/incus/.preseed-done`). The preseed (`incus admin init --preseed < /incus-preseed.yaml`) configures:
 
